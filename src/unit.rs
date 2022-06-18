@@ -1,8 +1,9 @@
 use std::fmt;
-use std::fmt::{Formatter, Write};
+use std::fmt::Formatter;
 use std::str::FromStr;
 
 #[derive(Debug, Eq, PartialEq)]
+#[allow(clippy::upper_case_acronyms)]
 pub enum Unit {
     NOK,
     EUR,
@@ -13,7 +14,7 @@ impl Unit {
         match s {
             "NOK" => Ok(Self::NOK),
             "EUR" => Ok(Self::EUR),
-            _ => Err(())
+            _ => Err(()),
         }
     }
 
@@ -21,7 +22,7 @@ impl Unit {
         match idx {
             0 => Ok(Self::NOK),
             1 => Ok(Self::EUR),
-            _ => Err(())
+            _ => Err(()),
         }
     }
 
