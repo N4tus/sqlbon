@@ -713,6 +713,7 @@ dependencies = [
  "relm4-components",
  "relm4-macros",
  "rusqlite",
+ "tracker",
 ]
 
 [[package]]

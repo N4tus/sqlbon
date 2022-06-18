@@ -2,7 +2,7 @@ use std::fmt;
 use std::fmt::{Formatter, Write};
 use std::str::FromStr;
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum Unit {
     NOK,
     EUR,

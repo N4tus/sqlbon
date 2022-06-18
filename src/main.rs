@@ -45,26 +45,78 @@ struct Item {
     receipt_idx: u32,
 }
 
+#[tracker::track]
+struct Ui {
+    selected_unit: Unit,
+}
+
 struct App {
     conn: Connection,
     stores: Vec<StoreRow>,
     receipts: Vec<ReceiptRow>,
+    ui: Ui,
 }
 
 enum Msg {
-    Update,
+    SelectUnit(Unit),
     AddStore(Store),
     AddReceipt(Receipt),
     AddItem(Item),
 }
 
+impl App {
+    fn populate_receipts(&self, receipt_entry: &gtk::ComboBoxText) {
+        receipt_entry.remove_all();
+        for row in &self.receipts {
+            let t = format!("{} ({})", row.date, row.store_name);
+            receipt_entry.append(None, &t);
+        }
+        receipt_entry.set_active(Some(0));
+    }
+
+    fn populate_store(&self, store_entry: &gtk::ComboBoxText) {
+        store_entry.remove_all();
+        for row in &self.stores {
+            let t = format!("{} ({})", row.name, row.location);
+            store_entry.append(None, &t);
+        }
+        store_entry.set_active(Some(0));
+    }
+
+    fn load_stores(&mut self) {
+        let mut store_query = self.conn.prepare("SELECT id, name, location FROM Store;").unwrap();
+        self.stores = store_query.query_map([], |row|
+            Ok(StoreRow{
+                id: row.get(0)?,
+                name: row.get(1)?,
+                location: row.get(2)?,
+            })
+        ).unwrap().filter_map(|row| row.ok()).collect()
+    }
+
+    fn load_receipts(&mut self) {
+        let mut store_query = self.conn.prepare("SELECT Receipt.id, Receipt.store, Receipt.date, Store.name FROM Receipt INNER JOIN Store ON Receipt.store = Store.id ORDER BY Receipt.date DESC;").unwrap();
+        self.receipts = store_query.query_map([], |row|
+            Ok(ReceiptRow{
+                id: row.get(0)?,
+                store: row.get(1)?,
+                date: row.get(2)?,
+                store_name: row.get(3)?,
+            })
+        ).unwrap().filter_map(|row| row.ok()).collect()
+    }
+}
+
 impl AppUpdate for App {
     fn update(&mut self, msg: Self::Msg, _components: &Self::Components, _sender: Sender<Self::Msg>) -> bool {
+        self.ui.reset();
         match msg {
             Msg::AddStore(store) => {
                 let insert_query = self.conn.execute("INSERT INTO Store (name, location) VALUES (?1, ?2);", params![store.name.as_str(), store.location.as_str()]);
                 if let Err(err) = insert_query {
                     eprintln!("[add store]{err:#?}");
+                } else {
+                    self.load_stores();
                 }
             },
             Msg::AddReceipt(receipts) => {
@@ -72,12 +124,14 @@ impl AppUpdate for App {
                 let insert_query = self.conn.execute("INSERT INTO Receipt (store, date) VALUES (?1, ?2);", params![store.id, receipts.date.format("%F").unwrap().as_str()]);
                 if let Err(err) = insert_query {
                     eprintln!("[add receipt]{err:#?}");
+                } else {
+                    self.load_receipts();
                 }
             },
             Msg::AddItem(item) =>{
                 println!("{item:#?}");
             },
-            Msg::Update => {}
+            Msg::SelectUnit(unit) => self.ui.set_selected_unit(unit),
         }
         true
     }
@@ -105,6 +159,7 @@ impl Widgets<App, ()> for AppWidgets {
 
     view! {
         gtk::ApplicationWindow {
+            set_default_width: 1300,
             set_title: Some("SQLBon"),
             set_child = Some(&gtk::Box) {
                 set_orientation: gtk::Orientation::Vertical,
@@ -242,16 +297,13 @@ impl Widgets<App, ()> for AppWidgets {
                             },
 
                             append = &gtk::Label {
-                                set_label: watch!(&unit_entry.active()
-                                        .map(|idx| format!("price (x{}):", Unit::from_idx(idx).unwrap().scale()))
-                                        .unwrap_or_else(|| "price".to_string())),
+                                set_label: track!(model.ui.changed(Ui::selected_unit()), &format!("price (×{})", model.ui.selected_unit.scale())),
                             },
                             append: price_entry = &gtk::SpinButton {
                                 set_hexpand: true,
                                 set_halign: Align::Fill,
                                 set_numeric: true,
                                 set_digits: 0,
-                                set_snap_to_ticks: true,
                                 set_range: args!(1.0, 1000000.0),
                                 set_increments: args!(10.0, 500.0),
                             },
@@ -260,8 +312,8 @@ impl Widgets<App, ()> for AppWidgets {
                                 set_label: "unit:",
                             },
                             append: unit_entry = &gtk::ComboBoxText {
-                                connect_changed(sender) => move |_| {
-                                    send!(sender, Msg::Update)
+                                connect_changed(sender) => move |ue| {
+                                    send!(sender, Msg::SelectUnit(ue.active().unwrap().try_into().unwrap()))
                                 }
                             },
 
@@ -290,23 +342,9 @@ impl Widgets<App, ()> for AppWidgets {
 
     fn post_init() {
         {
-            let store_entry: &gtk::ComboBoxText = &store_entry;
-            for row in &model.stores {
-                let t = format!("{} ({})", row.name, row.location);
-                store_entry.append(None, &t);
-            }
-            store_entry.set_active(Some(0));
-        }
-        {
-            let receipt_entry: &gtk::ComboBoxText = &receipt_entry;
-            let receipts: &[ReceiptRow] = &model.receipts;
-            for row in receipts {
-                let t = format!("{} ({})", row.date, row.store_name);
-                receipt_entry.append(None, &t);
-            }
-            receipt_entry.set_active(Some(0));
-        }
-        {
+            let model: &App = model;
+            model.populate_store(&store_entry);
+            model.populate_receipts(&receipt_entry);
             let unit_entry: &gtk::ComboBoxText = &unit_entry;
             for unit in Unit::ALL {
                 unit_entry.append(None, unit.into());
@@ -326,34 +364,17 @@ fn main() {
     std::fs::copy("/home/janek/Downloads/sqlite-tools-linux-x86-3360000/expenses", "/home/janek/Downloads/sqlite-tools-linux-x86-3360000/expenses-test").unwrap();
     let conn = Connection::open("/home/janek/Downloads/sqlite-tools-linux-x86-3360000/expenses-test").unwrap();
 
-    let stores = {
-        let mut store_query = conn.prepare("SELECT id, name, location FROM Store;").unwrap();
-        store_query.query_map([], |row|
-            Ok(StoreRow{
-                id: row.get(0)?,
-                name: row.get(1)?,
-                location: row.get(2)?,
-            })
-        ).unwrap().filter_map(|row| row.ok()).collect()
-    };
-
-    let receipts = {
-        let mut store_query = conn.prepare("SELECT Receipt.id, Receipt.store, Receipt.date, Store.name FROM Receipt INNER JOIN Store ON Receipt.store = Store.id ORDER BY Receipt.date DESC;").unwrap();
-        store_query.query_map([], |row|
-            Ok(ReceiptRow{
-                id: row.get(0)?,
-                store: row.get(1)?,
-                date: row.get(2)?,
-                store_name: row.get(3)?,
-            })
-        ).unwrap().filter_map(|row| row.ok()).collect()
-    };
-
-    let model = App {
+    let mut model = App {
         conn,
-        stores,
-        receipts,
+        stores: Vec::new(),
+        receipts: Vec::new(),
+        ui: Ui {
+            selected_unit: Unit::NOK,
+            tracker: 0,
+        }
     };
+    model.load_stores();
+    model.load_receipts();
 
     let app = RelmApp::new(model);
     app.run();
