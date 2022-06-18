@@ -17,12 +17,22 @@ impl Unit {
         }
     }
 
+    pub fn from_idx(idx: u32) -> Result<Self, ()> {
+        match idx {
+            0 => Ok(Self::NOK),
+            1 => Ok(Self::EUR),
+            _ => Err(())
+        }
+    }
+
     pub fn scale(&self) -> u32 {
         match self {
             Unit::NOK => 100,
             Unit::EUR => 100,
         }
     }
+
+    pub const ALL: [Unit; 2] = [Unit::NOK, Unit::EUR];
 }
 
 impl FromStr for Unit {
@@ -30,6 +40,14 @@ impl FromStr for Unit {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::from_str(s)
+    }
+}
+
+impl TryFrom<u32> for Unit {
+    type Error = ();
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        Self::from_idx(value)
     }
 }
 

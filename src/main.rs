@@ -52,7 +52,6 @@ struct App {
 }
 
 enum Msg {
-    Print,
     AddStore(Store),
     AddReceipt(Receipt),
     AddItem(Item),
@@ -61,28 +60,6 @@ enum Msg {
 impl AppUpdate for App {
     fn update(&mut self, msg: Self::Msg, components: &Self::Components, sender: Sender<Self::Msg>) -> bool {
         match msg {
-            Msg::Print => match self.conn.prepare("SELECT * FROM Receipt;") {
-                Ok(mut stmt) => {
-                    println!("Prepare");
-                    let mut rows = stmt.query([]).unwrap();
-                    println!("rows");
-                    let mut i = 0;
-                    while let Some(row) = rows.next().unwrap() {
-                        match row.get(1) {
-                            Ok(Value::Null) => println!("{i}: null"),
-                            Ok(Value::Integer(int)) => println!("{i}: (i){int}"),
-                            Ok(Value::Real(real)) => println!("{i}: (r){real}"),
-                            Ok(Value::Text(t)) => println!("{i}: (s)'{t}'"),
-                            Ok(Value::Blob(b)) => println!("{i}: (b)'{}'", String::from_utf8_lossy(&b)),
-                            Err(err) => eprintln!("{:#?}", err),
-                        }
-                        i += 1;
-                    }
-                }
-                Err(err) => {
-                    println!("{:#?}", err);
-                }
-            },
             Msg::AddStore(store) => {
                 let insert_query = self.conn.execute("INSERT INTO Store (name, location) VALUES (?1, ?2);", params![store.name.as_str(), store.location.as_str()]);
                 if let Err(err) = insert_query {
@@ -211,12 +188,22 @@ impl Widgets<App, ()> for AppWidgets {
                         append = &gtk::Label {
                             set_label: "quantity:",
                         },
+                        append: quantity_entry = &gtk::SpinButton {
+                            set_numeric: true,
+                            set_digits: 0,
+                            set_snap_to_ticks: true,
+                            set_range: args!(1.0, 100.0),
+                            set_increments: args!(1.0, 5.0),
+                        },
+
                         append = &gtk::Label {
                             set_label: "price:",
                         },
                         append = &gtk::Label {
                             set_label: "unit:",
                         },
+                        append: unit_entry = &gtk::ComboBoxText { },
+
                         append = &gtk::Label {
                             set_label: "receipt:",
                         },
@@ -224,12 +211,12 @@ impl Widgets<App, ()> for AppWidgets {
                     },
                     append = &gtk::Button {
                         set_label: "Add",
-                        connect_clicked(sender, item_name_entry, receipt_entry) => move |_| {
+                        connect_clicked(sender, item_name_entry, receipt_entry, quantity_entry, unit_entry) => move |_| {
                             send!(sender, Msg::AddItem(Item{
                                 name: item_name_entry.text(),
-                                quantity: 1,
+                                quantity: quantity_entry.value_as_int() as _,
                                 price: 100,
-                                unit: Unit::NOK,
+                                unit: unit_entry.active().unwrap().try_into().unwrap(),
                                 receipt_idx: receipt_entry.active().unwrap(),
                             }));
                         },
@@ -256,6 +243,13 @@ impl Widgets<App, ()> for AppWidgets {
                 receipt_entry.append(None, &t);
             }
             receipt_entry.set_active(Some(0));
+        }
+        {
+            let unit_entry: &gtk::ComboBoxText = &unit_entry;
+            for unit in Unit::ALL {
+                unit_entry.append(None, unit.into());
+            }
+            unit_entry.set_active(Some(0));
         }
     }
 }
