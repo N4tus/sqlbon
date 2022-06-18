@@ -1,7 +1,7 @@
 use gtk::glib::{DateTime, GString, Sender, Type};
 use gtk::prelude::*;
-use gtk::{ListStore, SensitivityType, Widget};
-use relm4::{AppUpdate, Model, RelmApp, send, Widgets, WidgetPlus};
+use gtk::{Align, ListStore, SensitivityType, Widget};
+use relm4::{AppUpdate, Model, RelmApp, send, Widgets, WidgetPlus, WidgetRef};
 use relm4_macros::view;
 use rusqlite::{Connection, params};
 use rusqlite::types::Value;
@@ -52,13 +52,14 @@ struct App {
 }
 
 enum Msg {
+    Update,
     AddStore(Store),
     AddReceipt(Receipt),
     AddItem(Item),
 }
 
 impl AppUpdate for App {
-    fn update(&mut self, msg: Self::Msg, components: &Self::Components, sender: Sender<Self::Msg>) -> bool {
+    fn update(&mut self, msg: Self::Msg, _components: &Self::Components, _sender: Sender<Self::Msg>) -> bool {
         match msg {
             Msg::AddStore(store) => {
                 let insert_query = self.conn.execute("INSERT INTO Store (name, location) VALUES (?1, ?2);", params![store.name.as_str(), store.location.as_str()]);
@@ -75,7 +76,8 @@ impl AppUpdate for App {
             },
             Msg::AddItem(item) =>{
                 println!("{item:#?}");
-            }
+            },
+            Msg::Update => {}
         }
         true
     }
@@ -104,125 +106,185 @@ impl Widgets<App, ()> for AppWidgets {
     view! {
         gtk::ApplicationWindow {
             set_title: Some("SQLBon"),
-            set_default_width: 300,
-            set_default_height: 100,
-            set_child = Some(&gtk::Notebook) {
-                append_page(Some(&tab_store)) = &gtk::Box {
-                    set_orientation: gtk::Orientation::Vertical,
-                    set_margin_all: 5,
-                    set_spacing: 5,
-                    append = &gtk::Box {
-                        set_orientation: gtk::Orientation::Horizontal,
+            set_child = Some(&gtk::Box) {
+                set_orientation: gtk::Orientation::Vertical,
+                append = &gtk::HeaderBar { },
+
+                append: notebook = &gtk::Notebook {
+                    set_vexpand: true,
+                    set_hexpand: true,
+                    set_valign: Align::Fill,
+                    set_halign: Align::Fill,
+
+                    append_page(Some(&tab_store)) = &gtk::Box {
+                        set_vexpand: true,
+                        set_hexpand: true,
+                        set_valign: Align::Fill,
+                        set_halign: Align::Fill,
+                        set_orientation: gtk::Orientation::Vertical,
                         set_margin_all: 5,
                         set_spacing: 5,
+                        append = &gtk::Box {
+                            set_hexpand: true,
+                            set_vexpand: true,
+                            set_halign: Align::Fill,
+                            set_valign: Align::Center,
+                            set_orientation: gtk::Orientation::Horizontal,
+                            set_margin_all: 5,
+                            set_spacing: 5,
 
-                        append = &gtk::Label {
-                            set_label: "name:",
+                            append = &gtk::Label {
+                                set_label: "name:",
+                            },
+                            append: store_name_entry = &gtk::Entry {
+                                set_hexpand: true,
+                                set_halign: Align::Fill,
+                            },
+                            append = &gtk::Label {
+                                set_label: "location:",
+                            },
+                            append: location_entry = &gtk::Entry {
+                                set_hexpand: true,
+                                set_halign: Align::Fill,
+                            },
                         },
-
-                        append: store_name_entry = &gtk::Entry {},
-
-                        append = &gtk::Label {
-                            set_label: "location:",
+                        append = &gtk::Button {
+                            set_label: "Add",
+                            connect_clicked(sender, store_name_entry, location_entry) => move |_| {
+                                send!(sender, Msg::AddStore(Store{
+                                    name: store_name_entry.text(),
+                                    location: location_entry.text(),
+                                }));
+                            },
                         },
-
-                        append: location_entry = &gtk::Entry {},
                     },
 
-                    append = &gtk::Button {
-                        set_label: "Add",
-                        connect_clicked(sender, store_name_entry, location_entry) => move |_| {
-                            send!(sender, Msg::AddStore(Store{
-                                name: store_name_entry.text(),
-                                location: location_entry.text(),
-                            }));
+                    append_page(Some(&tab_receipt)) = &gtk::Box {
+                        set_vexpand: true,
+                        set_hexpand: true,
+                        set_valign: Align::Fill,
+                        set_halign: Align::Fill,
+                        set_orientation: gtk::Orientation::Vertical,
+                        set_margin_all: 5,
+                        set_spacing: 5,
+                        append = &gtk::Box {
+                            set_hexpand: true,
+                            set_vexpand: true,
+                            set_halign: Align::Fill,
+                            set_valign: Align::Center,
+                            set_orientation: gtk::Orientation::Horizontal,
+                            set_margin_all: 5,
+                            set_spacing: 5,
+
+                            append = &gtk::Label {
+                                set_label: "store:",
+                            },
+
+                            append: store_entry = &gtk::ComboBoxText {
+                                set_hexpand: true,
+                                set_vexpand: false,
+                                set_halign: Align::Fill,
+                                set_valign: Align::Center,
+                            },
+
+                            append = &gtk::Label {
+                                set_label: "date:",
+                            },
+
+                            append: date = &gtk::Calendar {},
+                        },
+                        append = &gtk::Button {
+                            set_label: "Add",
+                            connect_clicked(sender, date, store_entry) => move |_| {
+                                send!(sender, Msg::AddReceipt(Receipt{
+                                    store_idx: store_entry.active().unwrap(),
+                                    date: date.date(),
+                                }));
+                            },
+                        },
+                    },
+                    append_page(Some(&tab_item)) = &gtk::Box {
+                        set_vexpand: true,
+                        set_hexpand: true,
+                        set_valign: Align::Fill,
+                        set_halign: Align::Fill,
+                        set_orientation: gtk::Orientation::Vertical,
+                        set_margin_all: 5,
+                        set_spacing: 5,
+                        append = &gtk::Box {
+                            set_hexpand: true,
+                            set_vexpand: true,
+                            set_halign: Align::Fill,
+                            set_valign: Align::Center,
+                            set_orientation: gtk::Orientation::Horizontal,
+                            set_margin_all: 5,
+                            set_spacing: 5,
+
+                            append = &gtk::Label {
+                                set_label: "name:",
+                            },
+                            append: item_name_entry = &gtk::Entry {
+                                set_hexpand: true,
+                                set_halign: Align::Fill,
+                            },
+
+                            append = &gtk::Label {
+                                set_label: "quantity:",
+                            },
+                            append: quantity_entry = &gtk::SpinButton {
+                                set_hexpand: true,
+                                set_halign: Align::Fill,
+                                set_numeric: true,
+                                set_digits: 0,
+                                set_snap_to_ticks: true,
+                                set_range: args!(1.0, 100.0),
+                                set_increments: args!(1.0, 5.0),
+                            },
+
+                            append = &gtk::Label {
+                                set_label: watch!(&unit_entry.active()
+                                        .map(|idx| format!("price (x{}):", Unit::from_idx(idx).unwrap().scale()))
+                                        .unwrap_or_else(|| "price".to_string())),
+                            },
+                            append: price_entry = &gtk::SpinButton {
+                                set_hexpand: true,
+                                set_halign: Align::Fill,
+                                set_numeric: true,
+                                set_digits: 0,
+                                set_snap_to_ticks: true,
+                                set_range: args!(1.0, 1000000.0),
+                                set_increments: args!(10.0, 500.0),
+                            },
+
+                            append = &gtk::Label {
+                                set_label: "unit:",
+                            },
+                            append: unit_entry = &gtk::ComboBoxText {
+                                connect_changed(sender) => move |_| {
+                                    send!(sender, Msg::Update)
+                                }
+                            },
+
+                            append = &gtk::Label {
+                                set_label: "receipt:",
+                            },
+                            append: receipt_entry = &gtk::ComboBoxText { },
+                        },
+                        append = &gtk::Button {
+                            set_label: "Add",
+                            connect_clicked(sender, item_name_entry, receipt_entry, quantity_entry, unit_entry) => move |_| {
+                                send!(sender, Msg::AddItem(Item{
+                                    name: item_name_entry.text(),
+                                    quantity: quantity_entry.value_as_int() as _,
+                                    price: 100,
+                                    unit: unit_entry.active().unwrap().try_into().unwrap(),
+                                    receipt_idx: receipt_entry.active().unwrap(),
+                                }));
+                            },
                         },
                     },
                 },
-
-                append_page(Some(&tab_receipt)) = &gtk::Box {
-                    set_orientation: gtk::Orientation::Vertical,
-                    set_margin_all: 5,
-                    set_spacing: 5,
-                    append = &gtk::Box {
-                        set_orientation: gtk::Orientation::Horizontal,
-                        set_margin_all: 5,
-                        set_spacing: 5,
-
-                        append = &gtk::Label {
-                            set_label: "store:",
-                        },
-
-                        append: store_entry = &gtk::ComboBoxText { },
-
-                        append = &gtk::Label {
-                            set_label: "date:",
-                        },
-
-                        append: date = &gtk::Calendar {},
-                    },
-                    append = &gtk::Button {
-                        set_label: "Add",
-                        connect_clicked(sender, date, store_entry) => move |_| {
-                            send!(sender, Msg::AddReceipt(Receipt{
-                                store_idx: store_entry.active().unwrap(),
-                                date: date.date(),
-                            }));
-                        },
-                    },
-                },
-                append_page(Some(&tab_item)) = &gtk::Box {
-                    set_orientation: gtk::Orientation::Vertical,
-                    set_margin_all: 5,
-                    set_spacing: 5,
-                    append = &gtk::Box {
-                        set_orientation: gtk::Orientation::Horizontal,
-                        set_margin_all: 5,
-                        set_spacing: 5,
-
-                        append = &gtk::Label {
-                            set_label: "name:",
-                        },
-                        append: item_name_entry = &gtk::Entry { },
-
-                        append = &gtk::Label {
-                            set_label: "quantity:",
-                        },
-                        append: quantity_entry = &gtk::SpinButton {
-                            set_numeric: true,
-                            set_digits: 0,
-                            set_snap_to_ticks: true,
-                            set_range: args!(1.0, 100.0),
-                            set_increments: args!(1.0, 5.0),
-                        },
-
-                        append = &gtk::Label {
-                            set_label: "price:",
-                        },
-                        append = &gtk::Label {
-                            set_label: "unit:",
-                        },
-                        append: unit_entry = &gtk::ComboBoxText { },
-
-                        append = &gtk::Label {
-                            set_label: "receipt:",
-                        },
-                        append: receipt_entry = &gtk::ComboBoxText { },
-                    },
-                    append = &gtk::Button {
-                        set_label: "Add",
-                        connect_clicked(sender, item_name_entry, receipt_entry, quantity_entry, unit_entry) => move |_| {
-                            send!(sender, Msg::AddItem(Item{
-                                name: item_name_entry.text(),
-                                quantity: quantity_entry.value_as_int() as _,
-                                price: 100,
-                                unit: unit_entry.active().unwrap().try_into().unwrap(),
-                                receipt_idx: receipt_entry.active().unwrap(),
-                            }));
-                        },
-                    },
-                },
-            }
+            },
         }
     }
 
