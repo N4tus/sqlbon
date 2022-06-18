@@ -53,6 +53,10 @@ struct Ui {
     stores: (Vec<StoreRow>, Option<u32>),
     #[tracker::no_eq]
     receipts: (Vec<ReceiptRow>, Option<u32>),
+    #[tracker::do_not_track]
+    reset_item_fields: bool,
+    #[tracker::do_not_track]
+    reset_store_fields: bool,
 }
 
 struct App {
@@ -138,6 +142,8 @@ impl AppUpdate for App {
         _sender: Sender<Self::Msg>,
     ) -> bool {
         self.ui.reset();
+        self.ui.reset_item_fields = false;
+        self.ui.reset_store_fields = false;
         match msg {
             Msg::AddStore(store) => {
                 let insert_query = self.conn.execute(
@@ -148,6 +154,7 @@ impl AppUpdate for App {
                     eprintln!("[add store]{err:#?}");
                 } else {
                     self.load_stores();
+                    self.ui.reset_store_fields = true;
                 }
             }
             Msg::AddReceipt(receipts) => {
@@ -170,6 +177,8 @@ impl AppUpdate for App {
                 );
                 if let Err(err) = insert_query {
                     eprintln!("[add item]{err:#?}");
+                } else {
+                    self.ui.reset_item_fields = true;
                 }
             }
             Msg::SelectUnit(unit) => self.ui.set_selected_unit(unit),
@@ -235,6 +244,7 @@ impl Widgets<App, ()> for AppWidgets {
                             append: store_name_entry = &gtk::Entry {
                                 set_hexpand: true,
                                 set_halign: Align::Fill,
+                                set_text: track!(model.ui.reset_store_fields, ""),
                             },
                             append = &gtk::Label {
                                 set_label: "location:",
@@ -242,6 +252,7 @@ impl Widgets<App, ()> for AppWidgets {
                             append: location_entry = &gtk::Entry {
                                 set_hexpand: true,
                                 set_halign: Align::Fill,
+                                set_text: track!(model.ui.reset_store_fields, ""),
                             },
                         },
                         append = &gtk::Button {
@@ -308,6 +319,7 @@ impl Widgets<App, ()> for AppWidgets {
                         set_orientation: gtk::Orientation::Vertical,
                         set_margin_all: 5,
                         set_spacing: 5,
+
                         append = &gtk::Box {
                             set_hexpand: true,
                             set_vexpand: true,
@@ -323,6 +335,7 @@ impl Widgets<App, ()> for AppWidgets {
                             append: item_name_entry = &gtk::Entry {
                                 set_hexpand: true,
                                 set_halign: Align::Fill,
+                                set_text: track!(model.ui.reset_item_fields, ""),
                             },
 
                             append = &gtk::Label {
@@ -336,6 +349,7 @@ impl Widgets<App, ()> for AppWidgets {
                                 set_snap_to_ticks: true,
                                 set_range: args!(1.0, 100.0),
                                 set_increments: args!(1.0, 5.0),
+                                set_value: track!(model.ui.reset_item_fields, 1.0),
                             },
 
                             append = &gtk::Label {
@@ -348,6 +362,7 @@ impl Widgets<App, ()> for AppWidgets {
                                 set_digits: 0,
                                 set_range: args!(1.0, 1000000.0),
                                 set_increments: args!(10.0, 500.0),
+                                set_value: track!(model.ui.reset_item_fields, 1.0),
                             },
 
                             append = &gtk::Label {
@@ -417,6 +432,8 @@ fn main() {
             selected_unit: Unit::NOK,
             stores: (Vec::new(), None),
             receipts: (Vec::new(), None),
+            reset_item_fields: false,
+            reset_store_fields: false,
             tracker: 0,
         },
     };

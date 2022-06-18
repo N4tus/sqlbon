@@ -10,7 +10,6 @@ impl AppendAll for gtk::ComboBoxText {
         for d in data {
             self.append(None, &d);
         }
-        println!("{to_select:?}");
         self.set_active(to_select);
     }
 }
