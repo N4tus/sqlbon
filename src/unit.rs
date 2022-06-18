@@ -33,6 +33,10 @@ impl Unit {
         }
     }
 
+    pub fn as_str(&self) -> &str {
+        self.into()
+    }
+
     pub const ALL: [Unit; 2] = [Unit::NOK, Unit::EUR];
 }
 

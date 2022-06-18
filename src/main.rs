@@ -33,7 +33,6 @@ struct Receipt {
 #[derive(Debug)]
 struct ReceiptRow {
     id: i64,
-    store: i64,
     store_name: String,
     date: String,
 }
@@ -88,14 +87,13 @@ impl App {
         let row_to_select = new_stores
             .iter()
             .enumerate()
-            .filter(|(_, row)| {
+            .find(|(_, row)| {
                 self.ui
                     .stores
                     .0
                     .binary_search_by_key(&row.id, |old_row| old_row.id)
                     .is_err()
             })
-            .next()
             .map(|rts| rts.0)
             .or_else(|| new_stores.is_empty().then(|| new_stores.len() - 1))
             .map(|idx| idx as u32);
@@ -103,14 +101,13 @@ impl App {
     }
 
     fn load_receipts(&mut self) {
-        let mut store_query = self.conn.prepare("SELECT Receipt.id, Receipt.store, Receipt.date, Store.name FROM Receipt INNER JOIN Store ON Receipt.store = Store.id ORDER BY Receipt.id ASC;").unwrap();
+        let mut store_query = self.conn.prepare("SELECT Receipt.id, Receipt.date, Store.name FROM Receipt INNER JOIN Store ON Receipt.store = Store.id ORDER BY Receipt.id ASC;").unwrap();
         let new_receipts: Vec<_> = store_query
             .query_map([], |row| {
                 Ok(ReceiptRow {
                     id: row.get(0)?,
-                    store: row.get(1)?,
-                    date: row.get(2)?,
-                    store_name: row.get(3)?,
+                    date: row.get(1)?,
+                    store_name: row.get(2)?,
                 })
             })
             .unwrap()
@@ -119,14 +116,13 @@ impl App {
         let row_to_select = new_receipts
             .iter()
             .enumerate()
-            .filter(|(_, row)| {
+            .find(|(_, row)| {
                 self.ui
                     .receipts
                     .0
                     .binary_search_by_key(&row.id, |old_row| old_row.id)
                     .is_err()
             })
-            .next()
             .map(|rts| rts.0)
             .or_else(|| new_receipts.is_empty().then(|| new_receipts.len() - 1))
             .map(|idx| idx as u32);
@@ -167,7 +163,14 @@ impl AppUpdate for App {
                 }
             }
             Msg::AddItem(item) => {
-                println!("{item:#?}");
+                let receipt = &self.ui.receipts.0[item.receipt_idx as usize];
+                let insert_query = self.conn.execute(
+                    "INSERT INTO Item (name, quantity, price, unit, receipt) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![item.name.as_str(), item.quantity, item.price, item.unit.as_str(), receipt.id],
+                );
+                if let Err(err) = insert_query {
+                    eprintln!("[add item]{err:#?}");
+                }
             }
             Msg::SelectUnit(unit) => self.ui.set_selected_unit(unit),
         }
