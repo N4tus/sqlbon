@@ -75,6 +75,7 @@ struct Ui {
     settings_db_create_path: String,
     #[tracker::no_eq]
     settings_db_create_path_status: String,
+    page: i32,
 }
 
 struct App {
@@ -177,6 +178,7 @@ impl AppUpdate for App {
         self.ui.reset_store_fields = false;
         match msg {
             Msg::Init => {
+                self.ui.set_page(3);
                 if let Ok(file) = File::open("sqlbon_settings.json") {
                     if let Ok(data) = serde_json::from_reader(file) {
                         let data: Settings = data;
@@ -372,6 +374,7 @@ impl Widgets<App, ()> for AppWidgets {
                 set_hexpand: true,
                 set_valign: Align::Fill,
                 set_halign: Align::Fill,
+                set_page: track!(model.ui.changed(Ui::page()), model.ui.page),
 
                 append_page(Some(&tab_store)) = &gtk::Box {
                     set_vexpand: true,
@@ -523,6 +526,7 @@ impl Widgets<App, ()> for AppWidgets {
                             set_label: "unit:",
                         },
                         append: unit_entry = &gtk::ComboBoxText {
+                            append_all: args!(Unit::ALL.iter().map(|unit| unit.as_str().to_string()), Some(0)),
                             connect_changed(sender) => move |ue| {
                                 send!(sender, Msg::SelectUnit(ue.active().unwrap().try_into().unwrap()))
                             }
@@ -594,20 +598,13 @@ impl Widgets<App, ()> for AppWidgets {
                     attach(2, 4, 1, 1) = &gtk::Label {
                         set_label: track!(model.ui.changed(Ui::settings_db_create_path_status()), &model.ui.settings_db_create_path_status),
                     },
-                }
+                },
             },
         }
     }
 
     fn post_init() {
-        {
-            let unit_entry: &gtk::ComboBoxText = &unit_entry;
-            for unit in Unit::ALL {
-                unit_entry.append(None, unit.into());
-            }
-            unit_entry.set_active(Some(0));
-            send!(sender, Msg::Init);
-        }
+        send!(sender, Msg::Init);
     }
 }
 
@@ -630,6 +627,7 @@ fn main() {
             settings_db_path_status: String::new(),
             settings_db_create_path: String::new(),
             settings_db_create_path_status: String::new(),
+            page: 0,
             tracker: 0,
         },
     };
