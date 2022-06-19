@@ -19,6 +19,7 @@ use combobox::AppendAll;
 #[derive(Serialize, Deserialize, Debug)]
 struct Settings {
     db_file: String,
+    capitalize_item_names: bool,
 }
 
 #[derive(Debug)]
@@ -56,6 +57,12 @@ struct Item {
     receipt_idx: Option<u32>,
 }
 
+#[derive(PartialEq, Eq)]
+struct InitUpdate {
+    page: i32,
+    capitalize_item_names: bool,
+}
+
 #[tracker::track]
 struct Ui {
     selected_unit: Unit,
@@ -75,7 +82,7 @@ struct Ui {
     settings_db_create_path: String,
     #[tracker::no_eq]
     settings_db_create_path_status: String,
-    page: i32,
+    init_update: InitUpdate,
 }
 
 struct App {
@@ -93,6 +100,7 @@ enum Msg {
     ConnectDb,
     CreateDb,
     Init,
+    CapitalizeItem(bool),
 }
 
 impl App {
@@ -164,6 +172,31 @@ impl App {
             self.ui.set_receipts((new_receipts, row_to_select));
         }
     }
+
+    fn save_settings(&mut self) {
+        if let Ok(file) = File::options()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open("sqlbon_settings.json")
+        {
+            let settings = Settings {
+                db_file: self.ui.settings_db_path.trim().to_string(),
+                capitalize_item_names: self.ui.init_update.capitalize_item_names,
+            };
+            if serde_json::to_writer(file, &settings).is_ok() {
+                self.ui
+                    .set_settings_db_path_status("Successfully connected.".to_string());
+            } else {
+                self.ui.set_settings_db_path_status(
+                    "Could not write to sqlbon_settings.json".to_string(),
+                );
+            }
+        } else {
+            self.ui
+                .set_settings_db_path_status("Could not write to sqlbon_settings.json".to_string());
+        }
+    }
 }
 
 impl AppUpdate for App {
@@ -178,7 +211,10 @@ impl AppUpdate for App {
         self.ui.reset_store_fields = false;
         match msg {
             Msg::Init => {
-                self.ui.set_page(3);
+                let mut init_update = InitUpdate {
+                    page: 3,
+                    capitalize_item_names: false,
+                };
                 if let Ok(file) = File::open("sqlbon_settings.json") {
                     if let Ok(data) = serde_json::from_reader(file) {
                         let data: Settings = data;
@@ -187,6 +223,7 @@ impl AppUpdate for App {
                             self.load_stores();
                             self.load_receipts();
                             self.ui.set_settings_db_path(data.db_file);
+                            init_update.capitalize_item_names = data.capitalize_item_names;
                         } else {
                             self.ui.set_settings_db_path_status(format!(
                                 "'{}' is not a database file.",
@@ -199,6 +236,7 @@ impl AppUpdate for App {
                         );
                     }
                 }
+                self.ui.set_init_update(init_update);
             }
             Msg::AddStore(store) => {
                 if let Some(conn) = &self.conn {
@@ -234,9 +272,14 @@ impl AppUpdate for App {
                 if let Some(conn) = &self.conn {
                     if let Some(receipt_idx) = item.receipt_idx {
                         let receipt = &self.ui.receipts.0[receipt_idx as usize];
+                        let name = if self.ui.init_update.capitalize_item_names {
+                            item.name.to_uppercase()
+                        } else {
+                            item.name.to_string()
+                        };
                         let insert_query = conn.execute(
                               "INSERT INTO Item (name, quantity, price, unit, receipt) VALUES (?1, ?2, ?3, ?4, ?5)",
-                              params![item.name.as_str(), item.quantity, item.price, item.unit.as_str(), receipt.id],
+                              params![name, item.quantity, item.price, item.unit.as_str(), receipt.id],
                         );
                         if let Err(err) = insert_query {
                             eprintln!("[add item]{err:#?}");
@@ -267,29 +310,7 @@ impl AppUpdate for App {
                         self.conn = Some(conn);
                         self.load_stores();
                         self.load_receipts();
-                        if let Ok(file) = File::options()
-                            .create(true)
-                            .write(true)
-                            .truncate(true)
-                            .open("sqlbon_settings.json")
-                        {
-                            let settings = Settings {
-                                db_file: self.ui.settings_db_path.trim().to_string(),
-                            };
-                            if serde_json::to_writer(file, &settings).is_ok() {
-                                self.ui.set_settings_db_path_status(
-                                    "Successfully connected.".to_string(),
-                                );
-                            } else {
-                                self.ui.set_settings_db_path_status(
-                                    "Could not write to sqlbon_settings.json".to_string(),
-                                );
-                            }
-                        } else {
-                            self.ui.set_settings_db_path_status(
-                                "Could not write to sqlbon_settings.json".to_string(),
-                            );
-                        }
+                        self.save_settings();
                     } else {
                         self.ui.set_settings_db_path_status(
                             "Selected File is not a valid Database.".to_string(),
@@ -335,6 +356,10 @@ impl AppUpdate for App {
                         .set_settings_db_create_path_status("No File Selected.".to_string());
                 }
             }
+            Msg::CapitalizeItem(cap) => {
+                self.ui.init_update.capitalize_item_names = cap;
+                self.save_settings();
+            }
         }
         true
     }
@@ -374,7 +399,7 @@ impl Widgets<App, ()> for AppWidgets {
                 set_hexpand: true,
                 set_valign: Align::Fill,
                 set_halign: Align::Fill,
-                set_page: track!(model.ui.changed(Ui::page()), model.ui.page),
+                set_page: track!(model.ui.changed(Ui::init_update()), model.ui.init_update.page),
 
                 append_page(Some(&tab_store)) = &gtk::Box {
                     set_vexpand: true,
@@ -598,6 +623,16 @@ impl Widgets<App, ()> for AppWidgets {
                     attach(2, 4, 1, 1) = &gtk::Label {
                         set_label: track!(model.ui.changed(Ui::settings_db_create_path_status()), &model.ui.settings_db_create_path_status),
                     },
+                    attach(1, 5, 1, 1) = &gtk::Label {
+                        set_label: "Capitalize item names:",
+                    },
+                    attach(2, 5, 1, 1) = &gtk::CheckButton {
+                        set_label: Some("Capitalize"),
+                        set_active: track!(model.ui.changed(Ui::init_update()), model.ui.init_update.capitalize_item_names),
+                        connect_toggled(sender) => move |cb| {
+                            send!(sender, Msg::CapitalizeItem(cb.is_active()))
+                        }
+                    },
                 },
             },
         }
@@ -627,7 +662,10 @@ fn main() {
             settings_db_path_status: String::new(),
             settings_db_create_path: String::new(),
             settings_db_create_path_status: String::new(),
-            page: 0,
+            init_update: InitUpdate {
+                page: 0,
+                capitalize_item_names: false,
+            },
             tracker: 0,
         },
     };
