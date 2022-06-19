@@ -542,7 +542,7 @@ impl Widgets<App, ()> for AppWidgets {
                             set_halign: Align::Fill,
                             set_numeric: true,
                             set_digits: 0,
-                            set_range: args!(1.0, 1000000.0),
+                            set_range: args!(-1000000.0, 1000000.0),
                             set_increments: args!(10.0, 500.0),
                             set_value: track!(model.ui.reset_item_fields, 1.0),
                         },
