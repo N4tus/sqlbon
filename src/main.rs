@@ -36,7 +36,7 @@ struct StoreRow {
 
 #[derive(Debug)]
 struct Receipt {
-    store_idx: u32,
+    store_idx: Option<u32>,
     date: DateTime,
 }
 
@@ -53,7 +53,7 @@ struct Item {
     quantity: u32,
     price: u32,
     unit: Unit,
-    receipt_idx: u32,
+    receipt_idx: Option<u32>,
 }
 
 #[tracker::track]
@@ -214,29 +214,33 @@ impl AppUpdate for App {
             }
             Msg::AddReceipt(receipts) => {
                 if let Some(conn) = &self.conn {
-                    let store = &self.ui.stores.0[receipts.store_idx as usize];
-                    let insert_query = conn.execute(
-                        "INSERT INTO Receipt (store, date) VALUES (?1, ?2);",
-                        params![store.id, receipts.date.format("%F").unwrap().as_str()],
-                    );
-                    if let Err(err) = insert_query {
-                        eprintln!("[add receipt]{err:#?}");
-                    } else {
-                        self.load_receipts();
+                    if let Some(store_idx) = receipts.store_idx {
+                        let store = &self.ui.stores.0[store_idx as usize];
+                        let insert_query = conn.execute(
+                            "INSERT INTO Receipt (store, date) VALUES (?1, ?2);",
+                            params![store.id, receipts.date.format("%F").unwrap().as_str()],
+                        );
+                        if let Err(err) = insert_query {
+                            eprintln!("[add receipt]{err:#?}");
+                        } else {
+                            self.load_receipts();
+                        }
                     }
                 }
             }
             Msg::AddItem(item) => {
                 if let Some(conn) = &self.conn {
-                    let receipt = &self.ui.receipts.0[item.receipt_idx as usize];
-                    let insert_query = conn.execute(
-                        "INSERT INTO Item (name, quantity, price, unit, receipt) VALUES (?1, ?2, ?3, ?4, ?5)",
-                        params![item.name.as_str(), item.quantity, item.price, item.unit.as_str(), receipt.id],
-                    );
-                    if let Err(err) = insert_query {
-                        eprintln!("[add item]{err:#?}");
-                    } else {
-                        self.ui.reset_item_fields = true;
+                    if let Some(receipt_idx) = item.receipt_idx {
+                        let receipt = &self.ui.receipts.0[receipt_idx as usize];
+                        let insert_query = conn.execute(
+                              "INSERT INTO Item (name, quantity, price, unit, receipt) VALUES (?1, ?2, ?3, ?4, ?5)",
+                              params![item.name.as_str(), item.quantity, item.price, item.unit.as_str(), receipt.id],
+                        );
+                        if let Err(err) = insert_query {
+                            eprintln!("[add item]{err:#?}");
+                        } else {
+                            self.ui.reset_item_fields = true;
+                        }
                     }
                 }
             }
@@ -454,7 +458,7 @@ impl Widgets<App, ()> for AppWidgets {
                         set_label: "Add",
                         connect_clicked(sender, date, store_entry) => move |_| {
                             send!(sender, Msg::AddReceipt(Receipt{
-                                store_idx: store_entry.active().unwrap(),
+                                store_idx: store_entry.active(),
                                 date: date.date(),
                             }));
                         },
@@ -539,7 +543,7 @@ impl Widgets<App, ()> for AppWidgets {
                                 quantity: quantity_entry.value_as_int() as _,
                                 price: price_entry.value_as_int() as _,
                                 unit: unit_entry.active().unwrap().try_into().unwrap(),
-                                receipt_idx: receipt_entry.active().unwrap(),
+                                receipt_idx: receipt_entry.active(),
                             }));
                         },
                         set_sensitive: watch!(model.conn.is_some()),
@@ -614,12 +618,6 @@ impl Model for App {
 }
 
 fn main() {
-    std::fs::copy(
-        "/home/janek/Downloads/sqlite-tools-linux-x86-3360000/expenses",
-        "/home/janek/Downloads/sqlite-tools-linux-x86-3360000/expenses-test",
-    )
-    .unwrap();
-
     let model = App {
         conn: None,
         ui: Ui {
