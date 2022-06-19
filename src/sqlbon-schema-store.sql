@@ -1,0 +1,5 @@
+CREATE TABLE Store (
+    id INTEGER PRIMARY KEY,
+    name VARCHAR NOT NULL,
+    location VARCHAR NOT NULL
+);
