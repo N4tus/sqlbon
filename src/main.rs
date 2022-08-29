@@ -7,6 +7,7 @@ use relm4::{send, AppUpdate, Model, RelmApp, WidgetPlus, Widgets};
 use relm4_macros::view;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::fs::File;
 use std::ops::Not;
 
@@ -33,6 +34,57 @@ struct StoreRow {
     id: i64,
     name: String,
     location: String,
+}
+
+#[derive(Debug)]
+struct TotalRow {
+    unit: String,
+    price: i64,
+}
+
+impl fmt::Display for TotalRow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {}", self.price, self.unit)
+    }
+}
+
+struct Total(Vec<TotalRow>);
+
+impl Total {
+    fn new() -> Self {
+        Total(Vec::new())
+    }
+
+    fn for_receipt(conn: &Connection, receipt_id: i64) -> Self {
+        let mut totals_query = conn
+            .prepare(
+                "SELECT unit, SUM(price * quantity) FROM Item WHERE receipt == ?1 GROUP BY unit;",
+            )
+            .unwrap();
+        let total: Vec<_> = totals_query
+            .query_map(params![receipt_id], |row| {
+                Ok(TotalRow {
+                    unit: row.get(0)?,
+                    price: row.get(1)?,
+                })
+            })
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        Total(total)
+    }
+}
+
+impl fmt::Display for Total {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.0.is_empty() {
+            write!(f, "{}", self.0[0])?;
+            for total in &self.0[1..self.0.len()] {
+                write!(f, ", {}", total)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -125,6 +177,8 @@ struct Ui {
     store_name_valid: NameStatus,
     store_location_valid: NameStatus,
     item_name_valid: NameStatus,
+    #[tracker::no_eq]
+    total: Total,
 }
 
 struct App {
@@ -146,6 +200,7 @@ enum Msg {
     ValidateStoreName(GString),
     ValidateStoreLocation(GString),
     ValidateItemName(GString),
+    ReceiptChanged(Option<u32>),
 }
 
 impl App {
@@ -163,7 +218,7 @@ impl App {
                     })
                 })
                 .unwrap()
-                .filter_map(|row| row.ok())
+                .filter_map(Result::ok)
                 .collect();
             let row_to_select = new_stores
                 .iter()
@@ -323,26 +378,27 @@ impl AppUpdate for App {
                 }
             }
             Msg::AddItem(item) => {
-                if let Some(conn) = &self.conn {
-                    if let Some(receipt_idx) = item.receipt_idx {
-                        let item_name = item.name.trim();
-                        if !item_name.is_empty() {
-                            let receipt = &self.ui.receipts.0[receipt_idx as usize];
-                            let name = if self.ui.init_update.capitalize_item_names {
-                                item_name.to_uppercase()
-                            } else {
-                                item_name.to_string()
-                            };
-                            let insert_query = conn.execute(
+                if let (Some(conn), Some(receipt_idx)) = (&self.conn, item.receipt_idx) {
+                    let item_name = item.name.trim();
+                    if !item_name.is_empty() {
+                        let receipt = &self.ui.receipts.0[receipt_idx as usize];
+                        let name = if self.ui.init_update.capitalize_item_names {
+                            item_name.to_uppercase()
+                        } else {
+                            item_name.to_string()
+                        };
+                        let insert_query = conn.execute(
                                 "INSERT INTO Item (name, quantity, price, unit, receipt) VALUES (?1, ?2, ?3, ?4, ?5)",
                                 params![name, item.quantity, item.price, item.unit.as_str(), receipt.id],
                             );
-                            if let Err(err) = insert_query {
-                                eprintln!("[add item]{err:#?}");
-                            } else {
-                                self.ui.reset_item_fields = true;
-                            }
+                        if let Err(err) = insert_query {
+                            eprintln!("[add item]{err:#?}");
+                        } else {
+                            self.ui.reset_item_fields = true;
                         }
+
+                        // update total
+                        self.ui.set_total(Total::for_receipt(conn, receipt.id));
                     }
                 }
             }
@@ -440,6 +496,12 @@ impl AppUpdate for App {
                     self.ui.update_item_name_valid(NameStatus::name_non_empty);
                 } else {
                     self.ui.update_item_name_valid(NameStatus::name_empty);
+                }
+            }
+            Msg::ReceiptChanged(receipt_idx) => {
+                if let (Some(conn), Some(receipt_idx)) = (&self.conn, receipt_idx) {
+                    let receipt = &self.ui.receipts.0[receipt_idx as usize];
+                    self.ui.set_total(Total::for_receipt(conn, receipt.id));
                 }
             }
         }
@@ -656,7 +718,13 @@ impl Widgets<App, ()> for AppWidgets {
                         },
                         append: receipt_entry = &gtk::ComboBoxText {
                             append_all: track!(model.ui.changed(Ui::receipts()), model.ui.receipts.0.iter().map(|row| format!("{} ({})", row.date, row.store_name)), model.ui.receipts.1),
+                            connect_changed(sender) => move |receipt| {
+                                send!(sender, Msg::ReceiptChanged(receipt.active()))
+                            }
                         },
+                    },
+                    append = &gtk::Label {
+                        set_label: track!(model.ui.changed(Ui::total()), &format!("{}", model.ui.total)),
                     },
                     append = &gtk::Button {
                         set_label: "Add",
@@ -763,6 +831,7 @@ fn main() {
             store_name_valid: NameStatus::Invalid,
             store_location_valid: NameStatus::Invalid,
             item_name_valid: NameStatus::Invalid,
+            total: Total::new(),
             tracker: 0,
         },
     };
