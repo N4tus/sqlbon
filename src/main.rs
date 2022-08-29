@@ -1,7 +1,6 @@
 use crate::unit::Unit;
 use gtk::glib::{DateTime, GString, Sender};
 use gtk::prelude::*;
-use gtk::Align;
 use native_dialog::FileDialog;
 use relm4::{send, AppUpdate, Model, RelmApp, WidgetPlus, Widgets};
 use relm4_macros::view;
@@ -541,23 +540,23 @@ impl Widgets<App, ()> for AppWidgets {
             set_child: notebook = Some(&gtk::Notebook) {
                 set_vexpand: true,
                 set_hexpand: true,
-                set_valign: Align::Fill,
-                set_halign: Align::Fill,
+                set_valign: gtk::Align::Fill,
+                set_halign: gtk::Align::Fill,
                 set_page: track!(model.ui.changed(Ui::init_update()), model.ui.init_update.page),
 
                 append_page(Some(&tab_store)) = &gtk::Box {
                     set_vexpand: true,
                     set_hexpand: true,
-                    set_valign: Align::Fill,
-                    set_halign: Align::Fill,
+                    set_valign: gtk::Align::Fill,
+                    set_halign: gtk::Align::Fill,
                     set_orientation: gtk::Orientation::Vertical,
                     set_margin_all: 5,
                     set_spacing: 5,
                     append = &gtk::Box {
                         set_hexpand: true,
                         set_vexpand: true,
-                        set_halign: Align::Fill,
-                        set_valign: Align::Center,
+                        set_halign: gtk::Align::Fill,
+                        set_valign: gtk::Align::Center,
                         set_orientation: gtk::Orientation::Horizontal,
                         set_margin_all: 5,
                         set_spacing: 5,
@@ -567,7 +566,7 @@ impl Widgets<App, ()> for AppWidgets {
                         },
                         append: store_name_entry = &gtk::Entry {
                             set_hexpand: true,
-                            set_halign: Align::Fill,
+                            set_halign: gtk::Align::Fill,
                             set_text: track!(model.ui.reset_store_fields, ""),
                             connect_changed(sender) => move |store_name| {
                                 send!(sender, Msg::ValidateStoreName(store_name.text()));
@@ -578,7 +577,7 @@ impl Widgets<App, ()> for AppWidgets {
                         },
                         append: location_entry = &gtk::Entry {
                             set_hexpand: true,
-                            set_halign: Align::Fill,
+                            set_halign: gtk::Align::Fill,
                             set_text: track!(model.ui.reset_store_fields, ""),
                             connect_changed(sender) => move |store_location| {
                                 send!(sender, Msg::ValidateStoreLocation(store_location.text()));
@@ -603,16 +602,16 @@ impl Widgets<App, ()> for AppWidgets {
                 append_page(Some(&tab_receipt)) = &gtk::Box {
                     set_vexpand: true,
                     set_hexpand: true,
-                    set_valign: Align::Fill,
-                    set_halign: Align::Fill,
+                    set_valign: gtk::Align::Fill,
+                    set_halign: gtk::Align::Fill,
                     set_orientation: gtk::Orientation::Vertical,
                     set_margin_all: 5,
                     set_spacing: 5,
                     append = &gtk::Box {
                         set_hexpand: true,
                         set_vexpand: true,
-                        set_halign: Align::Fill,
-                        set_valign: Align::Center,
+                        set_halign: gtk::Align::Fill,
+                        set_valign: gtk::Align::Center,
                         set_orientation: gtk::Orientation::Horizontal,
                         set_margin_all: 5,
                         set_spacing: 5,
@@ -624,8 +623,8 @@ impl Widgets<App, ()> for AppWidgets {
                         append: store_entry = &gtk::ComboBoxText {
                             set_hexpand: true,
                             set_vexpand: false,
-                            set_halign: Align::Fill,
-                            set_valign: Align::Center,
+                            set_halign: gtk::Align::Fill,
+                            set_valign: gtk::Align::Center,
                             append_all: track!(model.ui.changed(Ui::stores()), model.ui.stores.0.iter().map(|row| format!("{} ({})", row.name, row.location)), model.ui.stores.1),
                         },
 
@@ -649,8 +648,8 @@ impl Widgets<App, ()> for AppWidgets {
                 append_page(Some(&tab_item)) = &gtk::Box {
                     set_vexpand: true,
                     set_hexpand: true,
-                    set_valign: Align::Fill,
-                    set_halign: Align::Fill,
+                    set_valign: gtk::Align::Fill,
+                    set_halign: gtk::Align::Fill,
                     set_orientation: gtk::Orientation::Vertical,
                     set_margin_all: 5,
                     set_spacing: 5,
@@ -658,8 +657,8 @@ impl Widgets<App, ()> for AppWidgets {
                     append = &gtk::Box {
                         set_hexpand: true,
                         set_vexpand: true,
-                        set_halign: Align::Fill,
-                        set_valign: Align::Center,
+                        set_halign: gtk::Align::Fill,
+                        set_valign: gtk::Align::Center,
                         set_orientation: gtk::Orientation::Horizontal,
                         set_margin_all: 5,
                         set_spacing: 5,
@@ -669,7 +668,7 @@ impl Widgets<App, ()> for AppWidgets {
                         },
                         append: item_name_entry = &gtk::Entry {
                             set_hexpand: true,
-                            set_halign: Align::Fill,
+                            set_halign: gtk::Align::Fill,
                             set_text: track!(model.ui.reset_item_fields, ""),
                             connect_changed(sender) => move |item_name| {
                                 send!(sender, Msg::ValidateItemName(item_name.text()));
@@ -681,7 +680,7 @@ impl Widgets<App, ()> for AppWidgets {
                         },
                         append: quantity_entry = &gtk::SpinButton {
                             set_hexpand: true,
-                            set_halign: Align::Fill,
+                            set_halign: gtk::Align::Fill,
                             set_numeric: true,
                             set_digits: 0,
                             set_snap_to_ticks: true,
@@ -695,7 +694,7 @@ impl Widgets<App, ()> for AppWidgets {
                         },
                         append: price_entry = &gtk::SpinButton {
                             set_hexpand: true,
-                            set_halign: Align::Fill,
+                            set_halign: gtk::Align::Fill,
                             set_numeric: true,
                             set_digits: 0,
                             set_range: args!(-1000000.0, 1000000.0),
@@ -743,8 +742,8 @@ impl Widgets<App, ()> for AppWidgets {
                 append_page(Some(&tab_settings)) = &gtk::Grid {
                     set_hexpand: true,
                     set_vexpand: true,
-                    set_halign: Align::Fill,
-                    set_valign: Align::Center,
+                    set_halign: gtk::Align::Fill,
+                    set_valign: gtk::Align::Center,
                     set_orientation: gtk::Orientation::Horizontal,
 
                     attach(1, 1, 1, 1) = &gtk::Button {
