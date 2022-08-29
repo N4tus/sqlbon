@@ -131,7 +131,7 @@ impl App {
                         .is_err()
                 })
                 .map(|rts| rts.0)
-                .or_else(|| new_stores.is_empty().not().then(|| new_stores.len() - 1))
+                .or_else(|| new_stores.is_empty().not().then_some(new_stores.len() - 1))
                 .map(|idx| idx as u32);
             self.ui.set_stores((new_stores, row_to_select));
         }
@@ -166,7 +166,7 @@ impl App {
                     new_receipts
                         .is_empty()
                         .not()
-                        .then(|| new_receipts.len() - 1)
+                        .then_some(new_receipts.len() - 1)
                 })
                 .map(|idx| idx as u32);
             self.ui.set_receipts((new_receipts, row_to_select));
