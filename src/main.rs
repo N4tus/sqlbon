@@ -63,6 +63,45 @@ struct InitUpdate {
     capitalize_item_names: bool,
 }
 
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum NameStatus {
+    Valid,
+    NonEmpty,
+    Connected,
+    Invalid,
+}
+
+impl NameStatus {
+    fn connect(&mut self) {
+        match *self {
+            NameStatus::Valid => {}
+            NameStatus::NonEmpty => *self = NameStatus::Valid,
+            NameStatus::Connected => {}
+            NameStatus::Invalid => *self = NameStatus::Connected,
+        }
+    }
+
+    // we never disconnect from a database, only override a connection if it was successful established
+
+    fn name_non_empty(&mut self) {
+        match *self {
+            NameStatus::Valid => {}
+            NameStatus::NonEmpty => {}
+            NameStatus::Connected => *self = NameStatus::Valid,
+            NameStatus::Invalid => *self = NameStatus::NonEmpty,
+        }
+    }
+
+    fn name_empty(&mut self) {
+        match *self {
+            NameStatus::Valid => *self = NameStatus::Connected,
+            NameStatus::NonEmpty => *self = NameStatus::Invalid,
+            NameStatus::Connected => {}
+            NameStatus::Invalid => {}
+        }
+    }
+}
+
 #[tracker::track]
 struct Ui {
     selected_unit: Unit,
@@ -83,6 +122,9 @@ struct Ui {
     #[tracker::no_eq]
     settings_db_create_path_status: String,
     init_update: InitUpdate,
+    store_name_valid: NameStatus,
+    store_location_valid: NameStatus,
+    item_name_valid: NameStatus,
 }
 
 struct App {
@@ -101,6 +143,9 @@ enum Msg {
     CreateDb,
     Init,
     CapitalizeItem(bool),
+    ValidateStoreName(GString),
+    ValidateStoreLocation(GString),
+    ValidateItemName(GString),
 }
 
 impl App {
@@ -224,6 +269,11 @@ impl AppUpdate for App {
                             self.load_receipts();
                             self.ui.set_settings_db_path(data.db_file);
                             init_update.capitalize_item_names = data.capitalize_item_names;
+                            self.ui.update_store_name_valid(NameStatus::connect);
+                            self.ui.update_store_location_valid(NameStatus::connect);
+                            self.ui.update_item_name_valid(NameStatus::connect);
+                            self.ui
+                                .set_settings_db_path_status("Successfully connected.".to_string());
                         } else {
                             self.ui.set_settings_db_path_status(format!(
                                 "'{}' is not a database file.",
@@ -240,15 +290,19 @@ impl AppUpdate for App {
             }
             Msg::AddStore(store) => {
                 if let Some(conn) = &self.conn {
-                    let insert_query = conn.execute(
-                        "INSERT INTO Store (name, location) VALUES (?1, ?2);",
-                        params![store.name.as_str(), store.location.as_str()],
-                    );
-                    if let Err(err) = insert_query {
-                        eprintln!("[add store]{err:#?}");
-                    } else {
-                        self.load_stores();
-                        self.ui.reset_store_fields = true;
+                    let store_name = store.name.trim();
+                    let store_location = store.location.trim();
+                    if !store_name.is_empty() && !store_location.is_empty() {
+                        let insert_query = conn.execute(
+                            "INSERT INTO Store (name, location) VALUES (?1, ?2);",
+                            params![store_name, store_location],
+                        );
+                        if let Err(err) = insert_query {
+                            eprintln!("[add store]{err:#?}");
+                        } else {
+                            self.load_stores();
+                            self.ui.reset_store_fields = true;
+                        }
                     }
                 }
             }
@@ -271,20 +325,23 @@ impl AppUpdate for App {
             Msg::AddItem(item) => {
                 if let Some(conn) = &self.conn {
                     if let Some(receipt_idx) = item.receipt_idx {
-                        let receipt = &self.ui.receipts.0[receipt_idx as usize];
-                        let name = if self.ui.init_update.capitalize_item_names {
-                            item.name.to_uppercase()
-                        } else {
-                            item.name.to_string()
-                        };
-                        let insert_query = conn.execute(
-                              "INSERT INTO Item (name, quantity, price, unit, receipt) VALUES (?1, ?2, ?3, ?4, ?5)",
-                              params![name, item.quantity, item.price, item.unit.as_str(), receipt.id],
-                        );
-                        if let Err(err) = insert_query {
-                            eprintln!("[add item]{err:#?}");
-                        } else {
-                            self.ui.reset_item_fields = true;
+                        let item_name = item.name.trim();
+                        if !item_name.is_empty() {
+                            let receipt = &self.ui.receipts.0[receipt_idx as usize];
+                            let name = if self.ui.init_update.capitalize_item_names {
+                                item_name.to_uppercase()
+                            } else {
+                                item_name.to_string()
+                            };
+                            let insert_query = conn.execute(
+                                "INSERT INTO Item (name, quantity, price, unit, receipt) VALUES (?1, ?2, ?3, ?4, ?5)",
+                                params![name, item.quantity, item.price, item.unit.as_str(), receipt.id],
+                            );
+                            if let Err(err) = insert_query {
+                                eprintln!("[add item]{err:#?}");
+                            } else {
+                                self.ui.reset_item_fields = true;
+                            }
                         }
                     }
                 }
@@ -311,6 +368,9 @@ impl AppUpdate for App {
                         self.load_stores();
                         self.load_receipts();
                         self.save_settings();
+                        self.ui.update_store_name_valid(NameStatus::connect);
+                        self.ui.update_store_location_valid(NameStatus::connect);
+                        self.ui.update_item_name_valid(NameStatus::connect);
                     } else {
                         self.ui.set_settings_db_path_status(
                             "Selected File is not a valid Database.".to_string(),
@@ -359,6 +419,28 @@ impl AppUpdate for App {
             Msg::CapitalizeItem(cap) => {
                 self.ui.init_update.capitalize_item_names = cap;
                 self.save_settings();
+            }
+            Msg::ValidateStoreName(name) => {
+                if !name.trim().is_empty() {
+                    self.ui.update_store_name_valid(NameStatus::name_non_empty);
+                } else {
+                    self.ui.update_store_name_valid(NameStatus::name_empty);
+                }
+            }
+            Msg::ValidateStoreLocation(location) => {
+                if !location.trim().is_empty() {
+                    self.ui
+                        .update_store_location_valid(NameStatus::name_non_empty);
+                } else {
+                    self.ui.update_store_location_valid(NameStatus::name_empty);
+                }
+            }
+            Msg::ValidateItemName(name) => {
+                if !name.trim().is_empty() {
+                    self.ui.update_item_name_valid(NameStatus::name_non_empty);
+                } else {
+                    self.ui.update_item_name_valid(NameStatus::name_empty);
+                }
             }
         }
         true
@@ -425,6 +507,9 @@ impl Widgets<App, ()> for AppWidgets {
                             set_hexpand: true,
                             set_halign: Align::Fill,
                             set_text: track!(model.ui.reset_store_fields, ""),
+                            connect_changed(sender) => move |store_name| {
+                                send!(sender, Msg::ValidateStoreName(store_name.text()));
+                            },
                         },
                         append = &gtk::Label {
                             set_label: "location:",
@@ -433,6 +518,9 @@ impl Widgets<App, ()> for AppWidgets {
                             set_hexpand: true,
                             set_halign: Align::Fill,
                             set_text: track!(model.ui.reset_store_fields, ""),
+                            connect_changed(sender) => move |store_location| {
+                                send!(sender, Msg::ValidateStoreLocation(store_location.text()));
+                            },
                         },
                     },
                     append = &gtk::Button {
@@ -443,7 +531,10 @@ impl Widgets<App, ()> for AppWidgets {
                                 location: location_entry.text(),
                             }));
                         },
-                        set_sensitive: watch!(model.conn.is_some()),
+                        set_sensitive: track!(
+                            model.ui.changed(Ui::store_name_valid()) || model.ui.changed(Ui::store_location_valid()),
+                            model.ui.store_name_valid == NameStatus::Valid && model.ui.store_location_valid == NameStatus::Valid
+                        ),
                     },
                 },
 
@@ -518,6 +609,9 @@ impl Widgets<App, ()> for AppWidgets {
                             set_hexpand: true,
                             set_halign: Align::Fill,
                             set_text: track!(model.ui.reset_item_fields, ""),
+                            connect_changed(sender) => move |item_name| {
+                                send!(sender, Msg::ValidateItemName(item_name.text()));
+                            },
                         },
 
                         append = &gtk::Label {
@@ -575,7 +669,7 @@ impl Widgets<App, ()> for AppWidgets {
                                 receipt_idx: receipt_entry.active(),
                             }));
                         },
-                        set_sensitive: watch!(model.conn.is_some()),
+                        set_sensitive: track!(model.ui.changed(Ui::item_name_valid()), model.ui.item_name_valid == NameStatus::Valid),
                     },
                 },
                 append_page(Some(&tab_settings)) = &gtk::Grid {
@@ -666,6 +760,9 @@ fn main() {
                 page: 0,
                 capitalize_item_names: false,
             },
+            store_name_valid: NameStatus::Invalid,
+            store_location_valid: NameStatus::Invalid,
+            item_name_valid: NameStatus::Invalid,
             tracker: 0,
         },
     };
