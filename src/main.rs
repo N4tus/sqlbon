@@ -52,7 +52,7 @@ struct ReceiptRow {
 struct Item {
     name: GString,
     quantity: u32,
-    price: u32,
+    price: i32,
     unit: Unit,
     receipt_idx: Option<u32>,
 }
@@ -570,7 +570,7 @@ impl Widgets<App, ()> for AppWidgets {
                             send!(sender, Msg::AddItem(Item{
                                 name: item_name_entry.text(),
                                 quantity: quantity_entry.value_as_int() as _,
-                                price: price_entry.value_as_int() as _,
+                                price: price_entry.value_as_int(),
                                 unit: unit_entry.active().unwrap().try_into().unwrap(),
                                 receipt_idx: receipt_entry.active(),
                             }));
