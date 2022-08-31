@@ -2,14 +2,15 @@ use crate::unit::Unit;
 use gtk::glib::{DateTime, GString, Sender};
 use gtk::prelude::*;
 use native_dialog::FileDialog;
-use relm4::{send, AppUpdate, Model, RelmApp, WidgetPlus, Widgets};
+use relm4::{send, AppUpdate, Components, Model, RelmApp, RelmComponent, WidgetPlus, Widgets};
 use relm4_macros::view;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs::File;
 use std::ops::Not;
 
+mod add_dublicate_alert;
 mod combobox;
 mod schema;
 mod unit;
@@ -28,7 +29,7 @@ struct Store {
     location: GString,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct StoreRow {
     id: i64,
     name: String,
@@ -185,10 +186,28 @@ struct App {
     ui: Ui,
 }
 
+struct AppComponents {
+    dialog: RelmComponent<add_dublicate_alert::Dialog, App>,
+}
+
+impl Components<App> for AppComponents {
+    fn init_components(parent_model: &App, parent_sender: Sender<Msg>) -> Self {
+        AppComponents {
+            dialog: RelmComponent::new(parent_model, parent_sender),
+        }
+    }
+
+    fn connect_parent(&mut self, parent_widgets: &AppWidgets) {
+        self.dialog.connect_parent(parent_widgets);
+    }
+}
+
 enum Msg {
     SelectUnit(Unit),
     AddStore(Store),
+    ForceAddStore(Store),
     AddReceipt(Receipt),
+    ForceAddReceipt(i64, GString),
     AddItem(Item),
     OpenDbDialog,
     OpenCreateDbDialog,
@@ -302,7 +321,7 @@ impl AppUpdate for App {
     fn update(
         &mut self,
         msg: Self::Msg,
-        _components: &Self::Components,
+        components: &Self::Components,
         _sender: Sender<Self::Msg>,
     ) -> bool {
         self.ui.reset();
@@ -347,32 +366,110 @@ impl AppUpdate for App {
                     let store_name = store.name.trim();
                     let store_location = store.location.trim();
                     if !store_name.is_empty() && !store_location.is_empty() {
-                        let insert_query = conn.execute(
-                            "INSERT INTO Store (name, location) VALUES (?1, ?2);",
-                            params![store_name, store_location],
-                        );
-                        if let Err(err) = insert_query {
-                            eprintln!("[add store]{err:#?}");
-                        } else {
-                            self.load_stores();
-                            self.ui.reset_store_fields = true;
+                        let existence_check_query = conn
+                            .query_row(
+                                "SELECT id FROM Store WHERE name == ?1 AND location == ?2;",
+                                params![store_name, store_location],
+                                |row| {
+                                    let id: i64 = row.get(0)?;
+                                    Ok(id)
+                                },
+                            )
+                            .optional();
+                        match existence_check_query {
+                            Ok(Some(_)) => {
+                                components
+                                    .dialog
+                                    .send(add_dublicate_alert::DialogMsg::Show(
+                                        add_dublicate_alert::WarningOrigin::Store {
+                                            name: store_name.to_string(),
+                                            location: store_location.to_string(),
+                                        },
+                                    ))
+                                    .unwrap();
+                            }
+                            Ok(None) => {
+                                let insert_query = conn.execute(
+                                    "INSERT INTO Store (name, location) VALUES (?1, ?2);",
+                                    params![store_name, store_location],
+                                );
+                                if let Err(err) = insert_query {
+                                    eprintln!("[add store]{err:#?}");
+                                } else {
+                                    self.load_stores();
+                                    self.ui.reset_store_fields = true;
+                                }
+                            }
+                            Err(err) => eprintln!("[add receipt]{err:#?}"),
                         }
                     }
                 }
             }
-            Msg::AddReceipt(receipts) => {
+            Msg::ForceAddStore(store) => {
                 if let Some(conn) = &self.conn {
-                    if let Some(store_idx) = receipts.store_idx {
-                        let store = &self.ui.stores.0[store_idx as usize];
-                        let insert_query = conn.execute(
-                            "INSERT INTO Receipt (store, date) VALUES (?1, ?2);",
-                            params![store.id, receipts.date.format("%F").unwrap().as_str()],
-                        );
-                        if let Err(err) = insert_query {
-                            eprintln!("[add receipt]{err:#?}");
-                        } else {
-                            self.load_receipts();
+                    let insert_query = conn.execute(
+                        "INSERT INTO Store (name, location) VALUES (?1, ?2);",
+                        params![store.name.as_str(), store.location.as_str()],
+                    );
+                    if let Err(err) = insert_query {
+                        eprintln!("[add store]{err:#?}");
+                    } else {
+                        self.load_stores();
+                        self.ui.reset_store_fields = true;
+                    }
+                }
+            }
+            Msg::AddReceipt(receipt) => {
+                if let (Some(conn), Some(store_idx)) = (&self.conn, receipt.store_idx) {
+                    let store = &self.ui.stores.0[store_idx as usize];
+                    let receipt_date = receipt.date.format("%F").unwrap();
+                    let existence_check_query = conn
+                        .query_row(
+                            "SELECT id FROM Receipt WHERE store == ?1 AND date == ?2;",
+                            params![store.id, receipt_date.as_str()],
+                            |row| {
+                                let id: i64 = row.get(0)?;
+                                Ok(id)
+                            },
+                        )
+                        .optional();
+                    match existence_check_query {
+                        Ok(Some(_)) => {
+                            components
+                                .dialog
+                                .send(add_dublicate_alert::DialogMsg::Show(
+                                    add_dublicate_alert::WarningOrigin::Receipt {
+                                        store: store.clone(),
+                                        date: receipt.date,
+                                    },
+                                ))
+                                .unwrap();
                         }
+                        Ok(None) => {
+                            let insert_query = conn.execute(
+                                "INSERT INTO Receipt (store, date) VALUES (?1, ?2);",
+                                params![store.id, receipt_date.as_str()],
+                            );
+                            if let Err(err) = insert_query {
+                                eprintln!("[add receipt]{err:#?}");
+                            } else {
+                                self.load_receipts();
+                            }
+                        }
+                        Err(err) => eprintln!("[add receipt]{err:#?}"),
+                    }
+                }
+            }
+            Msg::ForceAddReceipt(store_id, date) => {
+                if let Some(conn) = &self.conn {
+                    let insert_query = conn.execute(
+                        "INSERT INTO Receipt (store, date) VALUES (?1, ?2);",
+                        params![store_id, date.as_str()],
+                    );
+                    if let Err(err) = insert_query {
+                        eprintln!("[add receipt]{err:#?}");
+                    } else {
+                        self.load_receipts();
                     }
                 }
             }
@@ -534,7 +631,7 @@ impl Widgets<App, ()> for AppWidgets {
     }
 
     view! {
-        gtk::ApplicationWindow {
+        main_window = gtk::ApplicationWindow {
             set_default_width: 1300,
             set_title: Some("SQLBon"),
             set_child: notebook = Some(&gtk::Notebook) {
@@ -625,7 +722,7 @@ impl Widgets<App, ()> for AppWidgets {
                             set_vexpand: false,
                             set_halign: gtk::Align::Fill,
                             set_valign: gtk::Align::Center,
-                            append_all: track!(model.ui.changed(Ui::stores()), model.ui.stores.0.iter().map(|row| format!("{} ({})", row.name, row.location)), model.ui.stores.1),
+                            append_all: track!(model.ui.changed(Ui::stores()), model.ui.stores.0.iter().map(|row| format!("{} ({}) #{}", row.name, row.location, row.id)), model.ui.stores.1),
                         },
 
                         append = &gtk::Label {
@@ -716,7 +813,7 @@ impl Widgets<App, ()> for AppWidgets {
                             set_label: "receipt:",
                         },
                         append: receipt_entry = &gtk::ComboBoxText {
-                            append_all: track!(model.ui.changed(Ui::receipts()), model.ui.receipts.0.iter().map(|row| format!("{} ({})", row.date, row.store_name)), model.ui.receipts.1),
+                            append_all: track!(model.ui.changed(Ui::receipts()), model.ui.receipts.0.iter().map(|row| format!("{} ({}) #{}", row.date, row.store_name, row.id)), model.ui.receipts.1),
                             connect_changed(sender) => move |receipt| {
                                 send!(sender, Msg::ReceiptChanged(receipt.active()))
                             }
@@ -807,7 +904,7 @@ impl Widgets<App, ()> for AppWidgets {
 impl Model for App {
     type Msg = Msg;
     type Widgets = AppWidgets;
-    type Components = ();
+    type Components = AppComponents;
 }
 
 fn main() {
