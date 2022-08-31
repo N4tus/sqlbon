@@ -10,7 +10,7 @@ use std::fmt;
 use std::fs::File;
 use std::ops::Not;
 
-mod add_receipt_alert;
+mod add_dublicate_alert;
 mod combobox;
 mod schema;
 mod unit;
@@ -187,7 +187,7 @@ struct App {
 }
 
 struct AppComponents {
-    dialog: RelmComponent<add_receipt_alert::Dialog, App>,
+    dialog: RelmComponent<add_dublicate_alert::Dialog, App>,
 }
 
 impl Components<App> for AppComponents {
@@ -205,6 +205,7 @@ impl Components<App> for AppComponents {
 enum Msg {
     SelectUnit(Unit),
     AddStore(Store),
+    ForceAddStore(Store),
     AddReceipt(Receipt),
     ForceAddReceipt(i64, GString),
     AddItem(Item),
@@ -365,16 +366,56 @@ impl AppUpdate for App {
                     let store_name = store.name.trim();
                     let store_location = store.location.trim();
                     if !store_name.is_empty() && !store_location.is_empty() {
-                        let insert_query = conn.execute(
-                            "INSERT INTO Store (name, location) VALUES (?1, ?2);",
-                            params![store_name, store_location],
-                        );
-                        if let Err(err) = insert_query {
-                            eprintln!("[add store]{err:#?}");
-                        } else {
-                            self.load_stores();
-                            self.ui.reset_store_fields = true;
+                        let existence_check_query = conn
+                            .query_row(
+                                "SELECT id FROM Store WHERE name == ?1 AND location == ?2;",
+                                params![store_name, store_location],
+                                |row| {
+                                    let id: i64 = row.get(0)?;
+                                    Ok(id)
+                                },
+                            )
+                            .optional();
+                        match existence_check_query {
+                            Ok(Some(_)) => {
+                                components
+                                    .dialog
+                                    .send(add_dublicate_alert::DialogMsg::Show(
+                                        add_dublicate_alert::WarningOrigin::Store {
+                                            name: store_name.to_string(),
+                                            location: store_location.to_string(),
+                                        },
+                                    ))
+                                    .unwrap();
+                            }
+                            Ok(None) => {
+                                let insert_query = conn.execute(
+                                    "INSERT INTO Store (name, location) VALUES (?1, ?2);",
+                                    params![store_name, store_location],
+                                );
+                                if let Err(err) = insert_query {
+                                    eprintln!("[add store]{err:#?}");
+                                } else {
+                                    self.load_stores();
+                                    self.ui.reset_store_fields = true;
+                                }
+                            }
+                            Err(err) => eprintln!("[add receipt]{err:#?}"),
                         }
+                    }
+                }
+            }
+            Msg::ForceAddStore(store) => {
+                if let Some(conn) = &self.conn {
+                    let insert_query = conn.execute(
+                        "INSERT INTO Store (name, location) VALUES (?1, ?2);",
+                        params![store.name.as_str(), store.location.as_str()],
+                    );
+                    if let Err(err) = insert_query {
+                        eprintln!("[add store]{err:#?}");
+                    } else {
+                        self.load_stores();
+                        self.ui.reset_store_fields = true;
                     }
                 }
             }
@@ -396,9 +437,11 @@ impl AppUpdate for App {
                         Ok(Some(_)) => {
                             components
                                 .dialog
-                                .send(add_receipt_alert::DialogMsg::Show(
-                                    store.clone(),
-                                    receipt.date,
+                                .send(add_dublicate_alert::DialogMsg::Show(
+                                    add_dublicate_alert::WarningOrigin::Receipt {
+                                        store: store.clone(),
+                                        date: receipt.date,
+                                    },
                                 ))
                                 .unwrap();
                         }
