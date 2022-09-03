@@ -109,7 +109,7 @@ impl Widgets<Dialog, App> for DialogWidgets {
             }
         }
     }
-    fn post_connect_parent(&mut self, parent_widgets: &relm4::traits::Widgets) {
+    fn post_connect_parent(&mut self, parent_widgets: &AppWidgets) {
         self.dialog
             .set_transient_for(Some(&parent_widgets.main_window));
     }

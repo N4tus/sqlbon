@@ -1,3 +1,5 @@
+extern crate core;
+
 use crate::unit::Unit;
 use gtk::glib::{DateTime, GString, Sender};
 use gtk::prelude::*;
@@ -8,13 +10,15 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs::File;
-use std::ops::Not;
+use std::rc::Rc;
 
-mod add_dublicate_alert;
+mod add_duplicate_alert;
+mod analysis;
 mod combobox;
 mod schema;
 mod unit;
 
+use crate::analysis::AnalysisMsg;
 use combobox::AppendAll;
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -182,23 +186,26 @@ struct Ui {
 }
 
 struct App {
-    conn: Option<Connection>,
+    conn: Option<Rc<Connection>>,
     ui: Ui,
 }
 
 struct AppComponents {
-    dialog: RelmComponent<add_dublicate_alert::Dialog, App>,
+    dialog: RelmComponent<add_duplicate_alert::Dialog, App>,
+    analysis: RelmComponent<analysis::AnalysisModel, App>,
 }
 
 impl Components<App> for AppComponents {
     fn init_components(parent_model: &App, parent_sender: Sender<Msg>) -> Self {
         AppComponents {
-            dialog: RelmComponent::new(parent_model, parent_sender),
+            dialog: RelmComponent::new(parent_model, parent_sender.clone()),
+            analysis: RelmComponent::new(parent_model, parent_sender),
         }
     }
 
     fn connect_parent(&mut self, parent_widgets: &AppWidgets) {
         self.dialog.connect_parent(parent_widgets);
+        self.analysis.connect_parent(parent_widgets);
     }
 }
 
@@ -249,7 +256,7 @@ impl App {
                         .is_err()
                 })
                 .map(|rts| rts.0)
-                .or_else(|| new_stores.is_empty().not().then_some(new_stores.len() - 1))
+                .or_else(|| new_stores.len().checked_sub(1))
                 .map(|idx| idx as u32);
             self.ui.set_stores((new_stores, row_to_select));
         }
@@ -280,12 +287,7 @@ impl App {
                         .is_err()
                 })
                 .map(|rts| rts.0)
-                .or_else(|| {
-                    new_receipts
-                        .is_empty()
-                        .not()
-                        .then_some(new_receipts.len() - 1)
-                })
+                .or_else(|| new_receipts.len().checked_sub(1))
                 .map(|idx| idx as u32);
             self.ui.set_receipts((new_receipts, row_to_select));
         }
@@ -330,13 +332,18 @@ impl AppUpdate for App {
         match msg {
             Msg::Init => {
                 let mut init_update = InitUpdate {
-                    page: 3,
+                    page: 4,
                     capitalize_item_names: false,
                 };
                 if let Ok(file) = File::open("sqlbon_settings.json") {
                     if let Ok(data) = serde_json::from_reader(file) {
                         let data: Settings = data;
                         if let Ok(conn) = Connection::open(&data.db_file) {
+                            let conn = Rc::new(conn);
+                            send!(
+                                components.analysis,
+                                AnalysisMsg::ConnectDb(Rc::clone(&conn))
+                            );
                             self.conn = Some(conn);
                             self.load_stores();
                             self.load_receipts();
@@ -380,8 +387,8 @@ impl AppUpdate for App {
                             Ok(Some(_)) => {
                                 components
                                     .dialog
-                                    .send(add_dublicate_alert::DialogMsg::Show(
-                                        add_dublicate_alert::WarningOrigin::Store {
+                                    .send(add_duplicate_alert::DialogMsg::Show(
+                                        add_duplicate_alert::WarningOrigin::Store {
                                             name: store_name.to_string(),
                                             location: store_location.to_string(),
                                         },
@@ -437,8 +444,8 @@ impl AppUpdate for App {
                         Ok(Some(_)) => {
                             components
                                 .dialog
-                                .send(add_dublicate_alert::DialogMsg::Show(
-                                    add_dublicate_alert::WarningOrigin::Receipt {
+                                .send(add_duplicate_alert::DialogMsg::Show(
+                                    add_duplicate_alert::WarningOrigin::Receipt {
                                         store: store.clone(),
                                         date: receipt.date,
                                     },
@@ -516,6 +523,11 @@ impl AppUpdate for App {
             Msg::ConnectDb => {
                 if !self.ui.settings_db_path.trim().is_empty() {
                     if let Ok(conn) = Connection::open(self.ui.settings_db_path.trim()) {
+                        let conn = Rc::new(conn);
+                        send!(
+                            components.analysis,
+                            AnalysisMsg::ConnectDb(Rc::clone(&conn))
+                        );
                         self.conn = Some(conn);
                         self.load_stores();
                         self.load_receipts();
@@ -621,6 +633,11 @@ impl Widgets<App, ()> for AppWidgets {
         view! {
             tab_item = gtk::Label {
                 set_label: "Item",
+            }
+        }
+        view! {
+            tab_analysis = gtk::Label {
+                set_label: "Analysis",
             }
         }
         view! {
@@ -836,6 +853,7 @@ impl Widgets<App, ()> for AppWidgets {
                         set_sensitive: track!(model.ui.changed(Ui::item_name_valid()), model.ui.item_name_valid == NameStatus::Valid),
                     },
                 },
+                append_page(Some(&tab_analysis)): components.analysis.root_widget(),
                 append_page(Some(&tab_settings)) = &gtk::Grid {
                     set_hexpand: true,
                     set_vexpand: true,
