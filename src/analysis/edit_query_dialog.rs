@@ -9,11 +9,11 @@ pub(crate) struct QueryDialogModel {
     hidden: bool,
     op: HeaderOperation,
     indices: Vec<Rc<Cell<u32>>>,
-    name: String,
+    id: usize,
 }
 
 pub(crate) enum QueryDialogMsg {
-    Open(Query, String),
+    Open(Query, usize),
     Accept(Query),
     Cancel,
     HeaderOp(HeaderOperation),
@@ -40,7 +40,7 @@ impl ComponentUpdate<AnalysisModel> for QueryDialogModel {
             hidden: true,
             op: HeaderOperation::None,
             indices: vec![Rc::new(Cell::new(0))],
-            name: "".to_string(),
+            id: 0,
         }
     }
 
@@ -53,9 +53,9 @@ impl ComponentUpdate<AnalysisModel> for QueryDialogModel {
     ) {
         self.op = HeaderOperation::None;
         match msg {
-            QueryDialogMsg::Open(query, name) => {
+            QueryDialogMsg::Open(query, id) => {
                 self.hidden = false;
-                self.name = name;
+                self.id = id;
                 let len = self.indices.len();
                 for _ in 0..(len - 1) {
                     self.indices.remove(0);
@@ -68,10 +68,7 @@ impl ComponentUpdate<AnalysisModel> for QueryDialogModel {
             }
             QueryDialogMsg::Accept(query) => {
                 self.hidden = true;
-                send!(
-                    parent_sender,
-                    AnalysisMsg::EditQueryResult(query, self.name.clone())
-                );
+                send!(parent_sender, AnalysisMsg::EditQueryResult(query, self.id));
             }
             QueryDialogMsg::Cancel => {
                 self.hidden = true;

@@ -1,13 +1,13 @@
 use crate::analysis::edit_query_dialog::QueryDialogMsg;
 use crate::combobox::AppendAll;
 use crate::{App, Msg};
-use gtk::glib::{Type, Value};
+use gtk::glib::{GString, Type, Value};
 use gtk::prelude::*;
+use gtk::ScrollablePolicy;
 use relm4::{send, ComponentUpdate, Components, Model, RelmComponent, Sender, Widgets};
 use relm4_macros::view;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
 use std::rc::Rc;
@@ -16,12 +16,14 @@ use tap::TapFallible;
 mod edit_query_dialog;
 
 pub(crate) enum AnalysisMsg {
-    PopulateModel(String),
+    PopulateModel(usize),
     NewQuery(String),
-    EditQuery(String),
-    DeleteQuery(String),
-    EditQueryResult(Query, String),
+    EditQuery(usize),
+    DeleteQuery(usize),
+    EditQueryResult(Query, usize),
     ConnectDb(Rc<Connection>),
+    QuerySelected(Option<usize>),
+    NewQueryNameChanged(GString),
 }
 
 #[tracker::track]
@@ -29,9 +31,13 @@ pub(crate) struct AnalysisModel {
     #[tracker::do_not_track]
     analysis: Analysis,
     #[tracker::no_eq]
-    queries: HashMap<String, Query>,
+    queries: Vec<(String, Query)>,
     #[tracker::do_not_track]
     conn: Option<Rc<Connection>>,
+    #[tracker::do_not_track]
+    new_button_valid: bool,
+    selected_query: Option<usize>,
+    query_selected: bool,
 }
 
 #[tracker::track]
@@ -42,7 +48,7 @@ struct Analysis {
 
 struct Data {
     store: gtk::ListStore,
-    query: String,
+    query_id: usize,
 }
 
 pub(crate) struct AnalysisComponents {
@@ -151,7 +157,7 @@ impl Analysis {
     fn exec_query(
         &mut self,
         conn: &Connection,
-        query_name: String,
+        query_id: usize,
         query: &Query,
     ) -> Result<(), Box<dyn Error>> {
         let sql_query = conn.prepare(&query.sql);
@@ -187,10 +193,7 @@ impl Analysis {
                     let iter = store.append();
                     store.set(&iter, value_refs.as_slice());
                 }
-                self.set_model(Some(Data {
-                    store,
-                    query: query_name,
-                }));
+                self.set_model(Some(Data { store, query_id }));
             }
             Err(err) => eprintln!("[populate model]{err:#?}"),
         }
@@ -198,20 +201,20 @@ impl Analysis {
     }
 }
 
-fn save_queries(queries: &HashMap<String, Query>) -> std::io::Result<()> {
+fn save_queries(queries: &[(String, Query)]) -> std::io::Result<()> {
     if let Ok(file) = File::options()
         .create(true)
         .write(true)
         .truncate(true)
-        .open("sqlbon_queries.json")
+        .open("./sqlbon_queries.json")
     {
         serde_json::to_writer(file, queries)?;
     }
     Ok(())
 }
 
-fn read_queries() -> std::io::Result<HashMap<String, Query>> {
-    let file = File::open("sqlbon_queries.json")?;
+fn read_queries() -> std::io::Result<Vec<(String, Query)>> {
+    let file = File::open("./sqlbon_queries.json")?;
     let data = serde_json::from_reader(file)?;
     Ok(data)
 }
@@ -228,6 +231,9 @@ impl ComponentUpdate<App> for AnalysisModel {
                 .ok()
                 .unwrap_or_default(),
             conn: None,
+            new_button_valid: false,
+            selected_query: None,
+            query_selected: false,
             tracker: 0,
         }
     }
@@ -242,40 +248,51 @@ impl ComponentUpdate<App> for AnalysisModel {
         self.analysis.reset();
         self.reset();
         match msg {
-            AnalysisMsg::PopulateModel(query_name) => {
-                if let (Some(conn), Some(query)) = (&self.conn, self.queries.get(&query_name)) {
-                    if let Err(err) = self.analysis.exec_query(conn, query_name, query) {
-                        eprintln!("{err:#?}");
+            AnalysisMsg::PopulateModel(id) => {
+                if let (Some(conn), Some((_, query))) = (&self.conn, self.queries.get(id)) {
+                    if let Err(err) = self.analysis.exec_query(conn, id, query) {
+                        eprintln!("[exec query]{err:#?}");
                     }
                 }
             }
             AnalysisMsg::ConnectDb(db) => self.conn = Some(db),
-            AnalysisMsg::EditQueryResult(query, name) => {
+            AnalysisMsg::EditQueryResult(query, id) => {
                 // no track update, because name should already be in the map
-                self.queries.insert(name, query);
+                if let Some((_, q)) = self.queries.get_mut(id) {
+                    *q = query;
+                }
                 save_queries(&self.queries).unwrap();
             }
             AnalysisMsg::NewQuery(name) => {
-                if !self.queries.contains_key(&name) {
+                if !self.queries.iter().map(|(n, _)| n).any(|n| n == &name) {
                     let query = Query {
                         sql: "".to_string(),
                         table_header: Vec::new(),
                     };
                     self.update_queries(|q| {
-                        q.insert(name.clone(), query.clone());
+                        q.push((name.clone(), query.clone()));
                     });
-                    send!(components.query_dialog, QueryDialogMsg::Open(query, name))
+                    let id = self.queries.len() - 1;
+                    self.set_selected_query(Some(id));
+                    send!(components.query_dialog, QueryDialogMsg::Open(query, id))
                 }
             }
-            AnalysisMsg::EditQuery(name) => send!(
+            AnalysisMsg::EditQuery(id) => send!(
                 components.query_dialog,
-                QueryDialogMsg::Open(self.queries[&name].clone(), name)
+                QueryDialogMsg::Open(self.queries[id].1.clone(), id)
             ),
             AnalysisMsg::DeleteQuery(name) => {
                 self.update_queries(|q| {
-                    q.remove(&name);
+                    q.remove(name);
                 });
                 save_queries(&self.queries).unwrap();
+            }
+            AnalysisMsg::QuerySelected(active) => {
+                self.selected_query = active;
+                self.set_query_selected(active.is_some());
+            }
+            AnalysisMsg::NewQueryNameChanged(name) => {
+                self.new_button_valid = !name.trim().is_empty();
             }
         }
     }
@@ -286,15 +303,24 @@ impl Widgets<AnalysisModel, App> for AnalysisWidgets {
     view! {
         analysis_box = gtk::Box {
             set_orientation: gtk::Orientation::Horizontal,
-            set_vexpand: true,
-            set_valign: gtk::Align::Center,
             append = &gtk::Grid {
+                set_vexpand: true,
+                set_valign: gtk::Align::Center,
                 attach(0, 0, 2, 1): selected_query = &gtk::ComboBoxText {
-                    append_all: track!(model.changed(AnalysisModel::queries()), model.queries.keys().cloned(), None),
+                    append_all: track!(model.changed(AnalysisModel::queries()), model.queries.iter().map(|(n, _)|n).cloned(), None),
+                    set_active: track!(model.changed(AnalysisModel::selected_query()), model.selected_query.map(|id| id.try_into().unwrap())),
+                    connect_changed(sender) => move |query| {
+                        send!(sender, AnalysisMsg::QuerySelected(query.active().map(|id| id as usize)));
+                    },
                 },
-                attach(0, 1, 1, 1): name_entry = &gtk::Entry { },
+                attach(0, 1, 1, 1): name_entry = &gtk::Entry {
+                    connect_changed(sender) => move |name| {
+                        send!(sender, AnalysisMsg::NewQueryNameChanged(name.text()));
+                    },
+                },
                 attach(1, 1, 1, 1) = &gtk::Button {
                     set_label: "new",
+                    set_sensitive: watch!(model.new_button_valid),
                     connect_clicked(sender, name_entry) => move |_| {
                         let name = name_entry.text();
                         let name = name.trim();
@@ -306,30 +332,40 @@ impl Widgets<AnalysisModel, App> for AnalysisWidgets {
                 },
                 attach(0, 2, 1, 1) = &gtk::Button {
                     set_label: "edit",
+                    set_sensitive: track!(model.changed(AnalysisModel::query_selected()), model.query_selected),
                     connect_clicked(sender, selected_query) => move |_| {
-                        if let Some(name) = selected_query.active_text() {
-                            send!(sender, AnalysisMsg::EditQuery(name.to_string()));
+                        if let Some(id) = selected_query.active() {
+                            send!(sender, AnalysisMsg::EditQuery(id as usize));
                         }
                     },
                 },
                 attach(1, 2, 1, 1) = &gtk::Button {
                     set_label: "delete",
+                    set_sensitive: track!(model.changed(AnalysisModel::query_selected()), model.query_selected),
                     connect_clicked(sender, selected_query) => move |_| {
-                        if let Some(name) = selected_query.active_text() {
-                            send!(sender, AnalysisMsg::DeleteQuery(name.to_string()));
+                        if let Some(id) = selected_query.active() {
+                            send!(sender, AnalysisMsg::DeleteQuery(id as usize));
                         }
                     },
                 },
                 attach(0, 3, 2, 1) = &gtk::Button {
                     set_label: "execute",
+                    set_sensitive: track!(model.changed(AnalysisModel::query_selected()), model.query_selected),
                     connect_clicked(sender, selected_query) => move |_| {
-                        if let Some(name) = selected_query.active_text() {
-                            send!(sender, AnalysisMsg::PopulateModel(name.to_string()));
+                        if let Some(id) = selected_query.active() {
+                            send!(sender, AnalysisMsg::PopulateModel(id as usize));
                         }
                     },
                 },
             },
-            append: list = &gtk::TreeView {},
+            append = &gtk::ScrolledWindow {
+                set_child: list = Some(&gtk::TreeView) {
+                    set_hexpand: true,
+                    set_vexpand: false,
+                    set_valign: gtk::Align::Center,
+                    set_vscroll_policy: ScrollablePolicy::Natural,
+                },
+            },
         }
     }
 
@@ -342,7 +378,7 @@ impl Widgets<AnalysisModel, App> for AnalysisWidgets {
         if model.analysis.changed(Analysis::model()) {
             if let Some(data) = &model.analysis.model {
                 let data: &Data = data;
-                if let Some(q) = model.queries.get(&data.query) {
+                if let Some((_, q)) = model.queries.get(data.query_id) {
                     for (i, (q, _)) in q.table_header.iter().enumerate() {
                         let i: i32 = i.try_into().unwrap();
                         if let Some(column) = list.column(i) {
@@ -354,6 +390,8 @@ impl Widgets<AnalysisModel, App> for AnalysisWidgets {
                                     set_title: q,
                                     pack_start: args!(&cell, true),
                                     set_attributes: args!(&cell, &[("text", i)]),
+                                    set_sort_column_id: i,
+                                    set_resizable: true,
                                 }
                             }
                             list.append_column(&column);
