@@ -292,7 +292,9 @@ impl ComponentUpdate<App> for AnalysisModel {
                 self.set_query_selected(active.is_some());
             }
             AnalysisMsg::NewQueryNameChanged(name) => {
-                self.new_button_valid = !name.trim().is_empty();
+                let name = name.trim();
+                self.new_button_valid =
+                    !name.is_empty() && !self.queries.iter().map(|(n, _)| n).any(|n| n == name);
             }
         }
     }
