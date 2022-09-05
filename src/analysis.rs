@@ -14,13 +14,14 @@ use std::rc::Rc;
 use tap::TapFallible;
 
 mod edit_query_dialog;
+mod type_def;
 
 pub(crate) enum AnalysisMsg {
     PopulateModel(usize),
     NewQuery(String),
     EditQuery(usize),
     DeleteQuery(usize),
-    EditQueryResult(Query, usize),
+    EditQueryResult(Query, String, usize),
     ConnectDb(Rc<Connection>),
     QuerySelected(Option<usize>),
     NewQueryNameChanged(GString),
@@ -74,7 +75,7 @@ impl Model for AnalysisModel {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-enum ColumnType {
+pub(crate) enum ColumnType {
     String,
     Number,
     Date,
@@ -122,7 +123,7 @@ impl From<ColumnType> for Type {
 }
 
 #[derive(Debug)]
-struct NumberOutOfRange(u32);
+pub(crate) struct NumberOutOfRange(u32);
 
 impl TryFrom<u32> for ColumnType {
     type Error = NumberOutOfRange;
@@ -151,6 +152,15 @@ impl From<ColumnType> for u32 {
 pub(crate) struct Query {
     sql: String,
     table_header: Vec<(String, ColumnType)>,
+}
+
+impl Query {
+    fn new() -> Self {
+        Query {
+            sql: String::new(),
+            table_header: Vec::new(),
+        }
+    }
 }
 
 impl Analysis {
@@ -256,31 +266,48 @@ impl ComponentUpdate<App> for AnalysisModel {
                 }
             }
             AnalysisMsg::ConnectDb(db) => self.conn = Some(db),
-            AnalysisMsg::EditQueryResult(query, id) => {
+            AnalysisMsg::EditQueryResult(query, name, id) => {
                 // no track update, because name should already be in the map
-                if let Some((_, q)) = self.queries.get_mut(id) {
-                    *q = query;
-                }
+                self.update_queries(|q| {
+                    if let Some((n, q)) = q.get_mut(id) {
+                        *q = query;
+                        *n = name;
+                    }
+                });
+                // force change
+                self.update_selected_query(|sq| *sq = Some(id));
                 save_queries(&self.queries).unwrap();
             }
             AnalysisMsg::NewQuery(name) => {
                 if !self.queries.iter().map(|(n, _)| n).any(|n| n == &name) {
-                    let query = Query {
-                        sql: "".to_string(),
-                        table_header: Vec::new(),
-                    };
-                    self.update_queries(|q| {
-                        q.push((name.clone(), query.clone()));
+                    self.update_queries(move |q| {
+                        q.push((name, Query::new()));
                     });
                     let id = self.queries.len() - 1;
                     self.set_selected_query(Some(id));
-                    send!(components.query_dialog, QueryDialogMsg::Open(query, id))
+                    send!(
+                        components.query_dialog,
+                        QueryDialogMsg::Open {
+                            query: Query::new(),
+                            id,
+                            names: self.queries.iter().map(|(n, _)| n).cloned().collect(),
+                            ok_button_name: "add".to_string(),
+                        }
+                    )
                 }
             }
-            AnalysisMsg::EditQuery(id) => send!(
-                components.query_dialog,
-                QueryDialogMsg::Open(self.queries[id].1.clone(), id)
-            ),
+            AnalysisMsg::EditQuery(id) => {
+                let q = &self.queries[id];
+                send!(
+                    components.query_dialog,
+                    QueryDialogMsg::Open {
+                        query: q.1.clone(),
+                        id,
+                        names: self.queries.iter().map(|(n, _)| n).cloned().collect(),
+                        ok_button_name: "edit".to_string(),
+                    }
+                )
+            }
             AnalysisMsg::DeleteQuery(name) => {
                 self.update_queries(|q| {
                     q.remove(name);

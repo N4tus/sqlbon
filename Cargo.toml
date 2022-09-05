@@ -20,3 +20,7 @@ tap = "1.0.1"
 [profile.release]
 lto = "yes"
 strip = "symbols"
+
+[patch.crates-io]
+tracker = { git = "https://github.com/N4tus/Tracker" }
+tracker-macros = { git = "https://github.com/N4tus/Tracker" }
