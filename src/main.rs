@@ -1,13 +1,19 @@
 extern crate core;
 
+use crate::analysis::{Analysis, AnalysisMsg};
+use crate::combobox::AppendAll;
 use crate::unit::Unit;
-use gtk::glib::{DateTime, GString, Sender};
-use gtk::prelude::*;
 use native_dialog::FileDialog;
-use relm4::{send, AppUpdate, Components, Model, RelmApp, RelmComponent, WidgetPlus, Widgets};
-use relm4_macros::view;
+use relm4::gtk;
+use relm4::gtk::glib::{DateTime, GString};
+use relm4::gtk::prelude::*;
+use relm4::{
+    Component, ComponentController, ComponentParts, ComponentSender, Controller, RelmApp,
+    SimpleComponent, WidgetPlus,
+};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::convert::identity;
 use std::fmt;
 use std::fs::File;
 use std::rc::Rc;
@@ -17,9 +23,6 @@ mod analysis;
 mod combobox;
 mod schema;
 mod unit;
-
-use crate::analysis::AnalysisMsg;
-use combobox::AppendAll;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Settings {
@@ -114,10 +117,7 @@ struct Item {
 }
 
 #[derive(PartialEq, Eq)]
-struct InitUpdate {
-    page: i32,
-    capitalize_item_names: bool,
-}
+struct InitUpdate {}
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 enum NameStatus {
@@ -177,7 +177,8 @@ struct Ui {
     settings_db_create_path: String,
     #[tracker::no_eq]
     settings_db_create_path_status: String,
-    init_update: InitUpdate,
+    page: i32,
+    capitalize_item_names: bool,
     store_name_valid: NameStatus,
     store_location_valid: NameStatus,
     item_name_valid: NameStatus,
@@ -188,27 +189,11 @@ struct Ui {
 struct App {
     conn: Option<Rc<Connection>>,
     ui: Ui,
+    dialog: Controller<add_duplicate_alert::Dialog>,
+    analysis: Controller<Analysis>,
 }
 
-struct AppComponents {
-    dialog: RelmComponent<add_duplicate_alert::Dialog, App>,
-    analysis: RelmComponent<analysis::AnalysisModel, App>,
-}
-
-impl Components<App> for AppComponents {
-    fn init_components(parent_model: &App, parent_sender: Sender<Msg>) -> Self {
-        AppComponents {
-            dialog: RelmComponent::new(parent_model, parent_sender.clone()),
-            analysis: RelmComponent::new(parent_model, parent_sender),
-        }
-    }
-
-    fn connect_parent(&mut self, parent_widgets: &AppWidgets) {
-        self.dialog.connect_parent(parent_widgets);
-        self.analysis.connect_parent(parent_widgets);
-    }
-}
-
+#[derive(Debug)]
 enum Msg {
     SelectUnit(Unit),
     AddStore(Store),
@@ -302,7 +287,7 @@ impl App {
         {
             let settings = Settings {
                 db_file: self.ui.settings_db_path.trim().to_string(),
-                capitalize_item_names: self.ui.init_update.capitalize_item_names,
+                capitalize_item_names: self.ui.capitalize_item_names,
             };
             if serde_json::to_writer(file, &settings).is_ok() {
                 self.ui
@@ -319,36 +304,427 @@ impl App {
     }
 }
 
-impl AppUpdate for App {
-    fn update(
-        &mut self,
-        msg: Self::Msg,
-        components: &Self::Components,
-        _sender: Sender<Self::Msg>,
-    ) -> bool {
+#[relm4::component]
+impl SimpleComponent for App {
+    type Init = ();
+    type Input = Msg;
+    type Output = ();
+    type Widgets = AppWidgets;
+    view! {
+        #[name(tab_store)]
+        gtk::Label {
+            set_label: "Store",
+        },
+        #[name(tab_receipt)]
+        gtk::Label {
+            set_label: "Receipt",
+        },
+        #[name(tab_item)]
+        gtk::Label {
+            set_label: "Item",
+        },
+        #[name(tab_analysis)]
+        gtk::Label {
+            set_label: "Analysis",
+        },
+        #[name(tab_settings)]
+        gtk::Label {
+            set_label: "Settings",
+        },
+        #[root]
+        #[name(main_window)]
+        gtk::ApplicationWindow {
+            set_default_width: 1300,
+            set_title: Some("SQLBon"),
+
+            #[name(notebook)]
+            gtk::Notebook {
+                set_vexpand: true,
+                set_hexpand: true,
+                set_valign: gtk::Align::Fill,
+                set_halign: gtk::Align::Fill,
+                #[track(model.ui.changed(Ui::page()))]
+                set_page: model.ui.page,
+
+                append_page[Some(&tab_store)] = &gtk::Box {
+                    set_vexpand: true,
+                    set_hexpand: true,
+                    set_valign: gtk::Align::Fill,
+                    set_halign: gtk::Align::Fill,
+                    set_orientation: gtk::Orientation::Vertical,
+                    set_margin_all: 5,
+                    set_spacing: 5,
+                    gtk::Box {
+                        set_hexpand: true,
+                        set_vexpand: true,
+                        set_halign: gtk::Align::Fill,
+                        set_valign: gtk::Align::Center,
+                        set_orientation: gtk::Orientation::Horizontal,
+                        set_margin_all: 5,
+                        set_spacing: 5,
+
+                        gtk::Label {
+                            set_label: "name:",
+                        },
+                        #[name(store_name_entry)]
+                        gtk::Entry {
+                            set_hexpand: true,
+                            set_halign: gtk::Align::Fill,
+                            #[track(model.ui.reset_store_fields)]
+                            set_text: "",
+                            connect_changed[sender] => move |store_name| {
+                                sender.input(Msg::ValidateStoreName(store_name.text()));
+                            },
+                        },
+                        gtk::Label {
+                            set_label: "location:",
+                        },
+                        #[name(location_entry)]
+                        gtk::Entry {
+                            set_hexpand: true,
+                            set_halign: gtk::Align::Fill,
+                            #[track(model.ui.reset_store_fields)]
+                            set_text: "",
+                            connect_changed[sender] => move |store_location| {
+                                sender.input(Msg::ValidateStoreLocation(store_location.text()));
+                            },
+                        },
+                    },
+                    gtk::Button {
+                        set_label: "Add",
+                        connect_clicked[sender, store_name_entry, location_entry] => move |_| {
+                            sender.input(Msg::AddStore(Store{
+                                name: store_name_entry.text(),
+                                location: location_entry.text(),
+                            }));
+                        },
+                        #[track(
+                            model.ui.changed(Ui::store_name_valid()) ||
+                            model.ui.changed(Ui::store_location_valid())
+                        )]
+                        set_sensitive:
+                            model.ui.store_name_valid == NameStatus::Valid &&
+                            model.ui.store_location_valid == NameStatus::Valid,
+                    },
+                },
+
+                append_page[Some(&tab_receipt)] = &gtk::Box {
+                    set_vexpand: true,
+                    set_hexpand: true,
+                    set_valign: gtk::Align::Fill,
+                    set_halign: gtk::Align::Fill,
+                    set_orientation: gtk::Orientation::Vertical,
+                    set_margin_all: 5,
+                    set_spacing: 5,
+                    gtk::Box {
+                        set_hexpand: true,
+                        set_vexpand: true,
+                        set_halign: gtk::Align::Fill,
+                        set_valign: gtk::Align::Center,
+                        set_orientation: gtk::Orientation::Horizontal,
+                        set_margin_all: 5,
+                        set_spacing: 5,
+
+                        gtk::Label {
+                            set_label: "store:",
+                        },
+
+                        #[name(store_entry)]
+                        gtk::ComboBoxText {
+                            set_hexpand: true,
+                            set_vexpand: false,
+                            set_halign: gtk::Align::Fill,
+                            set_valign: gtk::Align::Center,
+                            #[track(model.ui.changed(Ui::stores()))]
+                            append_all_and_select: ( model.ui.stores.0.iter().map(|row| format!("{} ({}) #{}", row.name, row.location, row.id)), model.ui.stores.1),
+                        },
+
+                        gtk::Label {
+                            set_label: "date:",
+                        },
+
+                        #[name(date)]
+                        gtk::Calendar {},
+                    },
+                    gtk::Button {
+                        set_label: "Add",
+                        connect_clicked[sender, date, store_entry] => move |_| {
+                            sender.input(Msg::AddReceipt(Receipt{
+                                store_idx: store_entry.active(),
+                                date: date.date(),
+                            }));
+                        },
+                        #[watch]
+                        set_sensitive: model.conn.is_some(),
+                    },
+                },
+                append_page[Some(&tab_item)] = &gtk::Box {
+                    set_vexpand: true,
+                    set_hexpand: true,
+                    set_valign: gtk::Align::Fill,
+                    set_halign: gtk::Align::Fill,
+                    set_orientation: gtk::Orientation::Vertical,
+                    set_margin_all: 5,
+                    set_spacing: 5,
+
+                    gtk::Box {
+                        set_hexpand: true,
+                        set_vexpand: true,
+                        set_halign: gtk::Align::Fill,
+                        set_valign: gtk::Align::Center,
+                        set_orientation: gtk::Orientation::Horizontal,
+                        set_margin_all: 5,
+                        set_spacing: 5,
+
+                        gtk::Label {
+                            set_label: "name:",
+                        },
+                        #[name(item_name_entry)]
+                        gtk::Entry {
+                            set_hexpand: true,
+                            set_halign: gtk::Align::Fill,
+                            #[track(model.ui.reset_item_fields)]
+                            set_text: "",
+                            connect_changed[sender] => move |item_name| {
+                                sender.input(Msg::ValidateItemName(item_name.text()));
+                            },
+                        },
+
+                        gtk::Label {
+                            set_label: "quantity:",
+                        },
+                        #[name(quantity_entry)]
+                        gtk::SpinButton {
+                            set_hexpand: true,
+                            set_halign: gtk::Align::Fill,
+                            set_numeric: true,
+                            set_digits: 0,
+                            set_snap_to_ticks: true,
+                            set_range: (1.0, 100.0),
+                            set_increments: (1.0, 5.0),
+                            #[track(model.ui.reset_item_fields)]
+                            set_value: 1.0,
+                        },
+
+                        gtk::Label {
+                            #[track(model.ui.changed(Ui::selected_unit()))]
+                            set_label: &format!("price (×{})", model.ui.selected_unit.scale()),
+                        },
+                        #[name(price_entry)]
+                        gtk::SpinButton {
+                            set_hexpand: true,
+                            set_halign: gtk::Align::Fill,
+                            set_numeric: true,
+                            set_digits: 0,
+                            set_range: (-1000000.0, 1000000.0),
+                            set_increments: (10.0, 500.0),
+                            #[track(model.ui.reset_item_fields, )]
+                            set_value: 1.0,
+                        },
+
+                        gtk::Label {
+                            set_label: "unit:",
+                        },
+                        #[name(unit_entry)]
+                        gtk::ComboBoxText {
+                            append_all_and_select: (Unit::ALL.iter().map(|unit| unit.as_str().to_string()), Some(0)),
+                            connect_changed[sender] => move |ue| {
+                                sender.input(Msg::SelectUnit(ue.active().unwrap().try_into().unwrap()));
+                            }
+                        },
+
+                        gtk::Label {
+                            set_label: "receipt:",
+                        },
+                        #[name(receipt_entry)]
+                        gtk::ComboBoxText {
+                            #[track(model.ui.changed(Ui::receipts()))]
+                            append_all_and_select: (model.ui.receipts.0.iter().map(|row| format!("{} ({}) #{}", row.date, row.store_name, row.id)), model.ui.receipts.1),
+                            connect_changed[sender] => move |receipt| {
+                                sender.input(Msg::ReceiptChanged(receipt.active()));
+                            }
+                        },
+                    },
+                    gtk::Label {
+                        #[track(model.ui.changed(Ui::total()))]
+                        set_label: &format!("{}", model.ui.total),
+                    },
+                    gtk::Button {
+                        set_label: "Add",
+                        connect_clicked[sender, item_name_entry, receipt_entry, quantity_entry, unit_entry, price_entry] => move |_| {
+                            sender.input(Msg::AddItem(Item{
+                                name: item_name_entry.text(),
+                                quantity: quantity_entry.value_as_int() as _,
+                                price: price_entry.value_as_int(),
+                                unit: unit_entry.active().unwrap().try_into().unwrap(),
+                                receipt_idx: receipt_entry.active(),
+                            }));
+                        },
+                        #[track(model.ui.changed(Ui::item_name_valid()))]
+                        set_sensitive: model.ui.item_name_valid == NameStatus::Valid,
+                    },
+                },
+                append_page: (model.analysis.widget(), Some(&tab_analysis)),
+                append_page[Some(&tab_settings)] = &gtk::Grid {
+                    set_hexpand: true,
+                    set_vexpand: true,
+                    set_halign: gtk::Align::Fill,
+                    set_valign: gtk::Align::Center,
+                    set_orientation: gtk::Orientation::Horizontal,
+
+                    attach[1, 1, 1, 1] = &gtk::Button {
+                        set_label: "Connect Database",
+                        connect_clicked[sender] => move |_| {
+                            sender.input(Msg::ConnectDb);
+                        },
+                    },
+                    attach[2, 1, 1, 1] = &gtk::Entry {
+                        set_hexpand: true,
+                        #[track(model.ui.changed(Ui::settings_db_path()))]
+                        set_text: &model.ui.settings_db_path,
+                    },
+                    attach[3, 1, 1, 1] = &gtk::Button {
+                        set_label: "Open File Dialog",
+                        connect_clicked[sender] => move |_| {
+                            sender.input(Msg::OpenDbDialog);
+                        },
+                    },
+                    attach[2, 2, 1, 1] = &gtk::Label {
+                        #[track(model.ui.changed(Ui::settings_db_path_status()))]
+                        set_label: &model.ui.settings_db_path_status,
+                    },
+                    attach[1, 3, 1, 1] = &gtk::Button {
+                        set_label: "Create Database",
+                        connect_clicked[sender] => move |_| {
+                            sender.input(Msg::CreateDb);
+                        },
+                    },
+                    attach[2, 3, 1, 1]: settings_create_db_entry = &gtk::Entry {
+                        set_hexpand: true,
+                        #[track(model.ui.changed(Ui::settings_db_create_path()))]
+                        set_text: &model.ui.settings_db_create_path,
+                    },
+                    attach[3, 3, 1, 1] = &gtk::Button {
+                        set_label: "Open File Dialog",
+                        connect_clicked[sender] => move |_| {
+                            sender.input(Msg::OpenCreateDbDialog);
+                        },
+                    },
+                    attach[2, 4, 1, 1] = &gtk::Label {
+                        #[track(model.ui.changed(Ui::settings_db_create_path_status()))]
+                        set_label: &model.ui.settings_db_create_path_status,
+                    },
+                    attach[1, 5, 1, 1] = &gtk::Label {
+                        set_label: "Capitalize item names:",
+                    },
+                    attach[2, 5, 1, 1] = &gtk::CheckButton {
+                        set_label: Some("Capitalize"),
+                        #[track(model.ui.changed(Ui::capitalize_item_names()))]
+                        set_active: model.ui.capitalize_item_names,
+                        connect_toggled[sender] => move |cb| {
+                            sender.input(Msg::CapitalizeItem(cb.is_active()));
+                        }
+                    },
+                },
+            },
+        }
+    }
+
+    fn init(
+        _init: Self::Init,
+        root: &Self::Root,
+        sender: ComponentSender<Self>,
+    ) -> ComponentParts<Self> {
+        let dialog = add_duplicate_alert::Dialog::builder()
+            .launch(root.clone().upcast())
+            .forward(sender.input_sender(), identity);
+
+        let analysis = Analysis::builder()
+            .launch(root.clone().upcast())
+            .forward(sender.input_sender(), identity);
+
+        let mut model = App {
+            conn: None,
+            ui: Ui {
+                selected_unit: Unit::NOK,
+                stores: (Vec::new(), None),
+                receipts: (Vec::new(), None),
+                reset_item_fields: false,
+                reset_store_fields: false,
+                settings_db_path: String::new(),
+                settings_db_path_status: String::new(),
+                settings_db_create_path: String::new(),
+                settings_db_create_path_status: String::new(),
+                page: 4,
+                capitalize_item_names: false,
+                store_name_valid: NameStatus::Invalid,
+                store_location_valid: NameStatus::Invalid,
+                item_name_valid: NameStatus::Invalid,
+                total: Total::new(),
+                tracker: 0,
+            },
+            dialog,
+            analysis,
+        };
+
+        if let Ok(file) = File::open("sqlbon_settings.json") {
+            if let Ok(data) = serde_json::from_reader(file) {
+                let data: Settings = data;
+                if let Ok(conn) = Connection::open(&data.db_file) {
+                    let conn = Rc::new(conn);
+                    model
+                        .analysis
+                        .emit(AnalysisMsg::ConnectDb(Rc::clone(&conn)));
+                    model.conn = Some(conn);
+                    model.load_stores();
+                    model.load_receipts();
+                    model.ui.set_settings_db_path(data.db_file);
+                    model
+                        .ui
+                        .set_capitalize_item_names(data.capitalize_item_names);
+                    model.ui.update_store_name_valid(NameStatus::connect);
+                    model.ui.update_store_location_valid(NameStatus::connect);
+                    model.ui.update_item_name_valid(NameStatus::connect);
+                    model
+                        .ui
+                        .set_settings_db_path_status("Successfully connected.".to_string());
+                } else {
+                    model.ui.set_settings_db_path_status(format!(
+                        "'{}' is not a database file.",
+                        data.db_file
+                    ));
+                }
+            } else {
+                model.ui.set_settings_db_path_status(
+                    "'sqlbon_settings.json' file is not valid.".to_string(),
+                );
+            }
+        }
+
+        let widgets = view_output!();
+
+        ComponentParts { model, widgets }
+    }
+
+    fn update(&mut self, message: Self::Input, _sender: ComponentSender<Self>) {
         self.ui.reset();
         self.ui.reset_item_fields = false;
         self.ui.reset_store_fields = false;
-        match msg {
+        match message {
             Msg::Init => {
-                let mut init_update = InitUpdate {
-                    page: 4,
-                    capitalize_item_names: false,
-                };
                 if let Ok(file) = File::open("sqlbon_settings.json") {
                     if let Ok(data) = serde_json::from_reader(file) {
                         let data: Settings = data;
                         if let Ok(conn) = Connection::open(&data.db_file) {
                             let conn = Rc::new(conn);
-                            send!(
-                                components.analysis,
-                                AnalysisMsg::ConnectDb(Rc::clone(&conn))
-                            );
+                            self.analysis.emit(AnalysisMsg::ConnectDb(Rc::clone(&conn)));
                             self.conn = Some(conn);
                             self.load_stores();
                             self.load_receipts();
                             self.ui.set_settings_db_path(data.db_file);
-                            init_update.capitalize_item_names = data.capitalize_item_names;
+                            self.ui
+                                .set_capitalize_item_names(data.capitalize_item_names);
+                            self.ui.set_page(4);
                             self.ui.update_store_name_valid(NameStatus::connect);
                             self.ui.update_store_location_valid(NameStatus::connect);
                             self.ui.update_item_name_valid(NameStatus::connect);
@@ -366,7 +742,6 @@ impl AppUpdate for App {
                         );
                     }
                 }
-                self.ui.set_init_update(init_update);
             }
             Msg::AddStore(store) => {
                 if let Some(conn) = &self.conn {
@@ -385,15 +760,12 @@ impl AppUpdate for App {
                             .optional();
                         match existence_check_query {
                             Ok(Some(_)) => {
-                                components
-                                    .dialog
-                                    .send(add_duplicate_alert::DialogMsg::Show(
-                                        add_duplicate_alert::WarningOrigin::Store {
-                                            name: store_name.to_string(),
-                                            location: store_location.to_string(),
-                                        },
-                                    ))
-                                    .unwrap();
+                                self.dialog.emit(add_duplicate_alert::DialogMsg::Show(
+                                    add_duplicate_alert::WarningOrigin::Store {
+                                        name: store_name.to_string(),
+                                        location: store_location.to_string(),
+                                    },
+                                ));
                             }
                             Ok(None) => {
                                 let insert_query = conn.execute(
@@ -442,15 +814,12 @@ impl AppUpdate for App {
                         .optional();
                     match existence_check_query {
                         Ok(Some(_)) => {
-                            components
-                                .dialog
-                                .send(add_duplicate_alert::DialogMsg::Show(
-                                    add_duplicate_alert::WarningOrigin::Receipt {
-                                        store: store.clone(),
-                                        date: receipt.date,
-                                    },
-                                ))
-                                .unwrap();
+                            self.dialog.emit(add_duplicate_alert::DialogMsg::Show(
+                                add_duplicate_alert::WarningOrigin::Receipt {
+                                    store: store.clone(),
+                                    date: receipt.date,
+                                },
+                            ));
                         }
                         Ok(None) => {
                             let insert_query = conn.execute(
@@ -485,15 +854,15 @@ impl AppUpdate for App {
                     let item_name = item.name.trim();
                     if !item_name.is_empty() {
                         let receipt = &self.ui.receipts.0[receipt_idx as usize];
-                        let name = if self.ui.init_update.capitalize_item_names {
+                        let name = if self.ui.capitalize_item_names {
                             item_name.to_uppercase()
                         } else {
                             item_name.to_string()
                         };
                         let insert_query = conn.execute(
-                                "INSERT INTO Item (name, quantity, price, unit, receipt) VALUES (?1, ?2, ?3, ?4, ?5)",
-                                params![name, item.quantity, item.price, item.unit.as_str(), receipt.id],
-                            );
+                            "INSERT INTO Item (name, quantity, price, unit, receipt) VALUES (?1, ?2, ?3, ?4, ?5)",
+                            params![name, item.quantity, item.price, item.unit.as_str(), receipt.id],
+                        );
                         if let Err(err) = insert_query {
                             eprintln!("[add item]{err:#?}");
                         } else {
@@ -524,10 +893,7 @@ impl AppUpdate for App {
                 if !self.ui.settings_db_path.trim().is_empty() {
                     if let Ok(conn) = Connection::open(self.ui.settings_db_path.trim()) {
                         let conn = Rc::new(conn);
-                        send!(
-                            components.analysis,
-                            AnalysisMsg::ConnectDb(Rc::clone(&conn))
-                        );
+                        self.analysis.emit(AnalysisMsg::ConnectDb(Rc::clone(&conn)));
                         self.conn = Some(conn);
                         self.load_stores();
                         self.load_receipts();
@@ -581,7 +947,7 @@ impl AppUpdate for App {
                 }
             }
             Msg::CapitalizeItem(cap) => {
-                self.ui.init_update.capitalize_item_names = cap;
+                self.ui.capitalize_item_names = cap;
                 self.save_settings();
             }
             Msg::ValidateStoreName(name) => {
@@ -613,343 +979,10 @@ impl AppUpdate for App {
                 }
             }
         }
-        true
     }
-}
-
-#[relm4_macros::widget]
-impl Widgets<App, ()> for AppWidgets {
-    fn pre_init() {
-        view! {
-            tab_store = gtk::Label {
-                set_label: "Store",
-            }
-        }
-        view! {
-            tab_receipt = gtk::Label {
-                set_label: "Receipt",
-            }
-        }
-        view! {
-            tab_item = gtk::Label {
-                set_label: "Item",
-            }
-        }
-        view! {
-            tab_analysis = gtk::Label {
-                set_label: "Analysis",
-            }
-        }
-        view! {
-            tab_settings = gtk::Label {
-                set_label: "Settings",
-            }
-        }
-    }
-
-    view! {
-        main_window = gtk::ApplicationWindow {
-            set_default_width: 1300,
-            set_title: Some("SQLBon"),
-            set_child: notebook = Some(&gtk::Notebook) {
-                set_vexpand: true,
-                set_hexpand: true,
-                set_valign: gtk::Align::Fill,
-                set_halign: gtk::Align::Fill,
-                set_page: track!(model.ui.changed(Ui::init_update()), model.ui.init_update.page),
-
-                append_page(Some(&tab_store)) = &gtk::Box {
-                    set_vexpand: true,
-                    set_hexpand: true,
-                    set_valign: gtk::Align::Fill,
-                    set_halign: gtk::Align::Fill,
-                    set_orientation: gtk::Orientation::Vertical,
-                    set_margin_all: 5,
-                    set_spacing: 5,
-                    append = &gtk::Box {
-                        set_hexpand: true,
-                        set_vexpand: true,
-                        set_halign: gtk::Align::Fill,
-                        set_valign: gtk::Align::Center,
-                        set_orientation: gtk::Orientation::Horizontal,
-                        set_margin_all: 5,
-                        set_spacing: 5,
-
-                        append = &gtk::Label {
-                            set_label: "name:",
-                        },
-                        append: store_name_entry = &gtk::Entry {
-                            set_hexpand: true,
-                            set_halign: gtk::Align::Fill,
-                            set_text: track!(model.ui.reset_store_fields, ""),
-                            connect_changed(sender) => move |store_name| {
-                                send!(sender, Msg::ValidateStoreName(store_name.text()));
-                            },
-                        },
-                        append = &gtk::Label {
-                            set_label: "location:",
-                        },
-                        append: location_entry = &gtk::Entry {
-                            set_hexpand: true,
-                            set_halign: gtk::Align::Fill,
-                            set_text: track!(model.ui.reset_store_fields, ""),
-                            connect_changed(sender) => move |store_location| {
-                                send!(sender, Msg::ValidateStoreLocation(store_location.text()));
-                            },
-                        },
-                    },
-                    append = &gtk::Button {
-                        set_label: "Add",
-                        connect_clicked(sender, store_name_entry, location_entry) => move |_| {
-                            send!(sender, Msg::AddStore(Store{
-                                name: store_name_entry.text(),
-                                location: location_entry.text(),
-                            }));
-                        },
-                        set_sensitive: track!(
-                            model.ui.changed(Ui::store_name_valid()) || model.ui.changed(Ui::store_location_valid()),
-                            model.ui.store_name_valid == NameStatus::Valid && model.ui.store_location_valid == NameStatus::Valid
-                        ),
-                    },
-                },
-
-                append_page(Some(&tab_receipt)) = &gtk::Box {
-                    set_vexpand: true,
-                    set_hexpand: true,
-                    set_valign: gtk::Align::Fill,
-                    set_halign: gtk::Align::Fill,
-                    set_orientation: gtk::Orientation::Vertical,
-                    set_margin_all: 5,
-                    set_spacing: 5,
-                    append = &gtk::Box {
-                        set_hexpand: true,
-                        set_vexpand: true,
-                        set_halign: gtk::Align::Fill,
-                        set_valign: gtk::Align::Center,
-                        set_orientation: gtk::Orientation::Horizontal,
-                        set_margin_all: 5,
-                        set_spacing: 5,
-
-                        append = &gtk::Label {
-                            set_label: "store:",
-                        },
-
-                        append: store_entry = &gtk::ComboBoxText {
-                            set_hexpand: true,
-                            set_vexpand: false,
-                            set_halign: gtk::Align::Fill,
-                            set_valign: gtk::Align::Center,
-                            append_all: track!(model.ui.changed(Ui::stores()), model.ui.stores.0.iter().map(|row| format!("{} ({}) #{}", row.name, row.location, row.id)), model.ui.stores.1),
-                        },
-
-                        append = &gtk::Label {
-                            set_label: "date:",
-                        },
-
-                        append: date = &gtk::Calendar {},
-                    },
-                    append = &gtk::Button {
-                        set_label: "Add",
-                        connect_clicked(sender, date, store_entry) => move |_| {
-                            send!(sender, Msg::AddReceipt(Receipt{
-                                store_idx: store_entry.active(),
-                                date: date.date(),
-                            }));
-                        },
-                        set_sensitive: watch!(model.conn.is_some()),
-                    },
-                },
-                append_page(Some(&tab_item)) = &gtk::Box {
-                    set_vexpand: true,
-                    set_hexpand: true,
-                    set_valign: gtk::Align::Fill,
-                    set_halign: gtk::Align::Fill,
-                    set_orientation: gtk::Orientation::Vertical,
-                    set_margin_all: 5,
-                    set_spacing: 5,
-
-                    append = &gtk::Box {
-                        set_hexpand: true,
-                        set_vexpand: true,
-                        set_halign: gtk::Align::Fill,
-                        set_valign: gtk::Align::Center,
-                        set_orientation: gtk::Orientation::Horizontal,
-                        set_margin_all: 5,
-                        set_spacing: 5,
-
-                        append = &gtk::Label {
-                            set_label: "name:",
-                        },
-                        append: item_name_entry = &gtk::Entry {
-                            set_hexpand: true,
-                            set_halign: gtk::Align::Fill,
-                            set_text: track!(model.ui.reset_item_fields, ""),
-                            connect_changed(sender) => move |item_name| {
-                                send!(sender, Msg::ValidateItemName(item_name.text()));
-                            },
-                        },
-
-                        append = &gtk::Label {
-                            set_label: "quantity:",
-                        },
-                        append: quantity_entry = &gtk::SpinButton {
-                            set_hexpand: true,
-                            set_halign: gtk::Align::Fill,
-                            set_numeric: true,
-                            set_digits: 0,
-                            set_snap_to_ticks: true,
-                            set_range: args!(1.0, 100.0),
-                            set_increments: args!(1.0, 5.0),
-                            set_value: track!(model.ui.reset_item_fields, 1.0),
-                        },
-
-                        append = &gtk::Label {
-                            set_label: track!(model.ui.changed(Ui::selected_unit()), &format!("price (×{})", model.ui.selected_unit.scale())),
-                        },
-                        append: price_entry = &gtk::SpinButton {
-                            set_hexpand: true,
-                            set_halign: gtk::Align::Fill,
-                            set_numeric: true,
-                            set_digits: 0,
-                            set_range: args!(-1000000.0, 1000000.0),
-                            set_increments: args!(10.0, 500.0),
-                            set_value: track!(model.ui.reset_item_fields, 1.0),
-                        },
-
-                        append = &gtk::Label {
-                            set_label: "unit:",
-                        },
-                        append: unit_entry = &gtk::ComboBoxText {
-                            append_all: args!(Unit::ALL.iter().map(|unit| unit.as_str().to_string()), Some(0)),
-                            connect_changed(sender) => move |ue| {
-                                send!(sender, Msg::SelectUnit(ue.active().unwrap().try_into().unwrap()))
-                            }
-                        },
-
-                        append = &gtk::Label {
-                            set_label: "receipt:",
-                        },
-                        append: receipt_entry = &gtk::ComboBoxText {
-                            append_all: track!(model.ui.changed(Ui::receipts()), model.ui.receipts.0.iter().map(|row| format!("{} ({}) #{}", row.date, row.store_name, row.id)), model.ui.receipts.1),
-                            connect_changed(sender) => move |receipt| {
-                                send!(sender, Msg::ReceiptChanged(receipt.active()))
-                            }
-                        },
-                    },
-                    append = &gtk::Label {
-                        set_label: track!(model.ui.changed(Ui::total()), &format!("{}", model.ui.total)),
-                    },
-                    append = &gtk::Button {
-                        set_label: "Add",
-                        connect_clicked(sender, item_name_entry, receipt_entry, quantity_entry, unit_entry, price_entry) => move |_| {
-                            send!(sender, Msg::AddItem(Item{
-                                name: item_name_entry.text(),
-                                quantity: quantity_entry.value_as_int() as _,
-                                price: price_entry.value_as_int(),
-                                unit: unit_entry.active().unwrap().try_into().unwrap(),
-                                receipt_idx: receipt_entry.active(),
-                            }));
-                        },
-                        set_sensitive: track!(model.ui.changed(Ui::item_name_valid()), model.ui.item_name_valid == NameStatus::Valid),
-                    },
-                },
-                append_page(Some(&tab_analysis)): components.analysis.root_widget(),
-                append_page(Some(&tab_settings)) = &gtk::Grid {
-                    set_hexpand: true,
-                    set_vexpand: true,
-                    set_halign: gtk::Align::Fill,
-                    set_valign: gtk::Align::Center,
-                    set_orientation: gtk::Orientation::Horizontal,
-
-                    attach(1, 1, 1, 1) = &gtk::Button {
-                        set_label: "Connect Database",
-                        connect_clicked(sender) => move |_| {
-                            send!(sender, Msg::ConnectDb);
-                        },
-                    },
-                    attach(2, 1, 1, 1) = &gtk::Entry {
-                        set_hexpand: true,
-                        set_text: track!(model.ui.changed(Ui::settings_db_path()), &model.ui.settings_db_path),
-                    },
-                    attach(3, 1, 1, 1) = &gtk::Button {
-                        set_label: "Open File Dialog",
-                        connect_clicked(sender) => move |_| {
-                            send!(sender, Msg::OpenDbDialog);
-                        },
-                    },
-                    attach(2, 2, 1, 1) = &gtk::Label {
-                        set_label: track!(model.ui.changed(Ui::settings_db_path_status()), &model.ui.settings_db_path_status),
-                    },
-                    attach(1, 3, 1, 1) = &gtk::Button {
-                        set_label: "Create Database",
-                        connect_clicked(sender) => move |_| {
-                            send!(sender, Msg::CreateDb);
-                        },
-                    },
-                    attach(2, 3, 1, 1): settings_create_db_entry = &gtk::Entry {
-                        set_hexpand: true,
-                        set_text: track!(model.ui.changed(Ui::settings_db_create_path()), &model.ui.settings_db_create_path),
-                    },
-                    attach(3, 3, 1, 1) = &gtk::Button {
-                        set_label: "Open File Dialog",
-                        connect_clicked(sender) => move |_| {
-                            send!(sender, Msg::OpenCreateDbDialog);
-                        },
-                    },
-                    attach(2, 4, 1, 1) = &gtk::Label {
-                        set_label: track!(model.ui.changed(Ui::settings_db_create_path_status()), &model.ui.settings_db_create_path_status),
-                    },
-                    attach(1, 5, 1, 1) = &gtk::Label {
-                        set_label: "Capitalize item names:",
-                    },
-                    attach(2, 5, 1, 1) = &gtk::CheckButton {
-                        set_label: Some("Capitalize"),
-                        set_active: track!(model.ui.changed(Ui::init_update()), model.ui.init_update.capitalize_item_names),
-                        connect_toggled(sender) => move |cb| {
-                            send!(sender, Msg::CapitalizeItem(cb.is_active()))
-                        }
-                    },
-                },
-            },
-        }
-    }
-
-    fn post_init() {
-        send!(sender, Msg::Init);
-    }
-}
-
-impl Model for App {
-    type Msg = Msg;
-    type Widgets = AppWidgets;
-    type Components = AppComponents;
 }
 
 fn main() {
-    let model = App {
-        conn: None,
-        ui: Ui {
-            selected_unit: Unit::NOK,
-            stores: (Vec::new(), None),
-            receipts: (Vec::new(), None),
-            reset_item_fields: false,
-            reset_store_fields: false,
-            settings_db_path: String::new(),
-            settings_db_path_status: String::new(),
-            settings_db_create_path: String::new(),
-            settings_db_create_path_status: String::new(),
-            init_update: InitUpdate {
-                page: 0,
-                capitalize_item_names: false,
-            },
-            store_name_valid: NameStatus::Invalid,
-            store_location_valid: NameStatus::Invalid,
-            item_name_valid: NameStatus::Invalid,
-            total: Total::new(),
-            tracker: 0,
-        },
-    };
-
-    let app = RelmApp::new(model);
-    app.run();
+    let app = RelmApp::new("n4tus.sqlbon");
+    app.run::<App>(());
 }

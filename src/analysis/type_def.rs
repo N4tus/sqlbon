@@ -1,8 +1,9 @@
-use crate::analysis::ColumnType;
-use glib::Object;
-use gtk::glib;
+use crate::analysis::{ColumnType, RowData};
+use gtk::glib::{self, Object, Type, Value};
 use gtk::prelude::*;
 use gtk::subclass::prelude::ObjectSubclassIsExt;
+use num_enum::{FromPrimitive, IntoPrimitive};
+use relm4::gtk;
 
 glib::wrapper! {
     pub(crate) struct TypeDef(ObjectSubclass<imp::TypeDefImp>)
@@ -10,40 +11,91 @@ glib::wrapper! {
         @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget, gtk::Orientable;
 }
 
+pub(crate) const VALIDITY: &str = "validity";
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub(crate) enum RowChange {
+    Add,
+    Delete,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug, IntoPrimitive, FromPrimitive)]
+#[repr(i32)]
+pub(crate) enum Validity {
+    NoRows,
+    NotFilled,
+    Duplicates,
+    #[num_enum(default)]
+    Valid,
+}
+
+impl ToValue for RowChange {
+    fn to_value(&self) -> Value {
+        let b: bool = (*self).into();
+        b.to_value()
+    }
+
+    fn value_type(&self) -> Type {
+        Type::BOOL
+    }
+}
+
+impl From<bool> for RowChange {
+    fn from(b: bool) -> Self {
+        match b {
+            true => RowChange::Add,
+            false => RowChange::Delete,
+        }
+    }
+}
+
+impl From<RowChange> for bool {
+    fn from(r: RowChange) -> Self {
+        match r {
+            RowChange::Add => true,
+            RowChange::Delete => false,
+        }
+    }
+}
+
 impl TypeDef {
     pub(crate) fn new() -> Self {
         Object::new(&[]).expect("Failed to create `TypeDef`.")
     }
 
-    pub(crate) fn replicate(&self, query: &[(String, ColumnType)]) {
+    pub(crate) fn replicate(&self, query: &RowData) {
         let imp = self.imp();
-        imp.replicate(self, query);
+        imp.replicate(self, &query.0);
     }
 
-    pub(crate) fn row_data(&self) -> Vec<(String, ColumnType)> {
-        let rows = self.imp().count_rows() as i32;
-        (0..rows)
-            .map(|idx| {
-                let name_entry = self
-                    .child_at(0, idx)
-                    .unwrap()
-                    .downcast::<gtk::Entry>()
-                    .unwrap()
-                    .text()
-                    .trim()
-                    .to_string();
-                let ty = self
-                    .child_at(1, idx)
-                    .unwrap()
-                    .downcast::<gtk::ComboBoxText>()
-                    .unwrap()
-                    .active()
-                    .map(ColumnType::try_from)
-                    .unwrap()
-                    .unwrap();
-                (name_entry, ty)
-            })
-            .collect()
+    pub(crate) fn row_data(&self) -> RowData {
+        RowData(
+            self.imp()
+                .row_iter()
+                .into_iter()
+                .map(|idx| idx as i32)
+                .map(|idx| {
+                    let name_entry = self
+                        .child_at(0, idx)
+                        .unwrap()
+                        .downcast::<gtk::Entry>()
+                        .unwrap()
+                        .text()
+                        .trim()
+                        .to_string();
+                    let ty = self
+                        .child_at(1, idx)
+                        .unwrap()
+                        .downcast::<gtk::ComboBoxText>()
+                        .unwrap()
+                        .active()
+                        .map(ColumnType::try_from)
+                        .unwrap()
+                        .unwrap();
+                    (name_entry, ty)
+                })
+                .collect(),
+        )
     }
 
     fn add_row(&self, idx: u32) {
@@ -74,12 +126,15 @@ impl Default for TypeDef {
 }
 
 mod imp {
+    use super::VALIDITY;
     use crate::analysis::ColumnType;
     use crate::AppendAll;
-    use gtk::glib;
-    use gtk::prelude::*;
-    use gtk::subclass::prelude::*;
-    use relm4_macros::view;
+    use relm4::gtk::prelude::*;
+    use relm4::gtk::subclass::prelude::*;
+    use relm4::gtk::{
+        self,
+        glib::{self, ParamSpec, Value},
+    };
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use tap::Tap;
@@ -168,7 +223,7 @@ mod imp {
     #[derive(Default)]
     pub(crate) struct TypeDefImp(RefCell<Vec<RowState>>);
 
-    #[glib::object_subclass]
+    #[gtk::glib::object_subclass]
     impl ObjectSubclass for TypeDefImp {
         const NAME: &'static str = "SQLBonTypeDef";
         type Type = super::TypeDef;
@@ -310,7 +365,7 @@ mod imp {
             }
 
             //--------------------------------------------------------------------------------------
-            for _ in 0..len {
+            for _ in 0..(len - 1) {
                 obj.remove_row(0);
             }
             for ((name, ty), row_state) in query.iter().zip(indices.iter()) {
@@ -325,8 +380,12 @@ mod imp {
             }
         }
 
-        pub(super) fn count_rows(&self) -> usize {
-            self.0.borrow().len()
+        pub(super) fn row_iter(&self) -> Vec<u32> {
+            let states = self.0.borrow();
+            states[0..states.len() - 1]
+                .iter()
+                .map(RowState::get_idx)
+                .collect()
         }
 
         fn add_row_widgets(
@@ -335,9 +394,8 @@ mod imp {
             idx: &Rc<Cell<u32>>,
             init: Option<(&str, ColumnType)>,
         ) -> (gtk::Button, gtk::Button) {
-            let name = gtk::Entry::new();
             let ty = gtk::ComboBoxText::new();
-            ty.append_all(
+            ty.append_all_and_select(
                 [
                     ColumnType::String.to_string(),
                     ColumnType::Number.to_string(),
@@ -345,14 +403,17 @@ mod imp {
                 ],
                 Some(0),
             );
-            if let Some((n, t)) = init {
-                name.set_text(n);
-                ty.set_active(Some(t.into()));
-            }
+            let name = gtk::Entry::new();
             let new_row = gtk::Button::with_label("new");
             let delete_row = gtk::Button::with_label("delete");
             let move_row_up = gtk::Button::with_label("up");
             let move_row_down = gtk::Button::with_label("down");
+            {
+                if let Some((n, t)) = init {
+                    name.set_text(n);
+                    ty.set_active(Some(t.into()));
+                }
+            }
             {
                 let idx = Rc::clone(idx);
                 let obj = obj.clone();
@@ -394,20 +455,30 @@ mod imp {
 
     // Trait shared by all GObjects
     impl ObjectImpl for TypeDefImp {
+        fn set_property(&self, _obj: &Self::Type, _id: usize, _value: &Value, pspec: &ParamSpec) {
+            match pspec.name() {
+                VALIDITY => {
+                    eprintln!("{} is read only", VALIDITY);
+                }
+                _ => unimplemented!(),
+            }
+        }
+
         fn constructed(&self, obj: &Self::Type) {
             self.parent_constructed(obj);
+
             let row_state = RowState::new(0).tap_mut(RowState::disable_up_and_down);
             let idx = row_state.idx();
             self.0.borrow_mut().push(row_state);
-            view! {
-                new_button = gtk::Button {
-                    set_label: "new",
-                    connect_clicked(idx, obj) => move |_| {
-                        obj.add_row(idx.get());
-                    },
-                }
+            let new_button = gtk::Button::new();
+            {
+                let obj = obj.clone();
+                new_button.set_label("new");
+                new_button.connect_clicked(move |_| {
+                    obj.add_row(idx.get());
+                });
             }
-            obj.attach(&new_button, 2, 0, 1, 1);
+            obj.attach(&new_button, 0, 0, 6, 1);
         }
     }
 

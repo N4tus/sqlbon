@@ -1,9 +1,10 @@
 use crate::analysis::type_def::TypeDef;
-use crate::analysis::{AnalysisModel, ColumnType, Query};
+use crate::analysis::{Query, RowData};
 use crate::AnalysisMsg;
-use gtk::glib::GString;
-use gtk::prelude::*;
-use relm4::{send, ComponentUpdate, Model, Sender, WidgetPlus, Widgets};
+use relm4::gtk;
+use relm4::gtk::glib::GString;
+use relm4::gtk::prelude::*;
+use relm4::{ComponentParts, ComponentSender, SimpleComponent, WidgetPlus};
 
 #[tracker::track]
 struct Ui {
@@ -11,20 +12,23 @@ struct Ui {
     #[tracker::no_eq]
     ok_button_name: String,
     #[tracker::no_eq]
-    init_query: Vec<(String, ColumnType)>,
+    init_query: RowData,
     #[tracker::no_eq]
     name: String,
     #[tracker::no_eq]
     sql: String,
+    #[tracker::no_eq]
+    status: String,
 }
 
-pub(crate) struct QueryDialogModel {
+pub(crate) struct QueryDialog {
     hidden: bool,
     id: usize,
     names: Vec<String>,
     ui: Ui,
 }
 
+#[derive(Debug)]
 pub(crate) enum QueryDialogMsg {
     Open {
         query: Query,
@@ -37,38 +41,166 @@ pub(crate) enum QueryDialogMsg {
     NameChanged(GString),
 }
 
-impl Model for QueryDialogModel {
-    type Msg = QueryDialogMsg;
+#[relm4::component(pub(crate))]
+impl SimpleComponent for QueryDialog {
+    type Input = QueryDialogMsg;
+    type Output = AnalysisMsg;
+    type Init = gtk::Window;
     type Widgets = QueryDialogWidgets;
-    type Components = ();
-}
 
-impl ComponentUpdate<AnalysisModel> for QueryDialogModel {
-    fn init_model(_parent_model: &AnalysisModel) -> Self {
-        QueryDialogModel {
+    view! {
+        #[root]
+        #[name(dialog)]
+        gtk::Dialog {
+            set_transient_for: Some(&parent_window),
+            set_modal: true,
+            set_default_width: 1300,
+            #[watch]
+            set_visible: !model.hidden,
+            gtk::Box {
+                set_hexpand: true,
+                set_vexpand: true,
+                set_halign: gtk::Align::Fill,
+                set_valign: gtk::Align::Center,
+                set_orientation: gtk::Orientation::Vertical,
+                set_margin_all: 5,
+                set_spacing: 5,
+
+                gtk::Grid {
+                    set_row_spacing: 5,
+                    set_column_spacing: 7,
+                    attach[0, 0, 1, 1] = &gtk::Label {
+                        set_text: "Name:",
+                        set_halign: gtk::Align::End,
+                    },
+                    attach[1, 0, 1, 1]: name_entry = &gtk::Entry {
+                        set_hexpand: false,
+                        set_halign: gtk::Align::Center,
+                        #[track(model.ui.changed(Ui::name()))]
+                        set_text: model.ui.name.as_str(),
+
+                        connect_changed[sender] => move |name| {
+                            sender.input(QueryDialogMsg::NameChanged(name.text()));
+                        },
+                    },
+                    attach[0, 1, 1, 1] = &gtk::Label {
+                        set_text: "SQL:",
+                        set_halign: gtk::Align::End,
+                    },
+                    attach[1, 1, 1, 1]: sql_entry = &gtk::Entry {
+                        set_hexpand: true,
+                        set_halign: gtk::Align::Fill,
+                        #[track(model.ui.changed(Ui::sql()))]
+                        set_text: model.ui.sql.as_str(),
+                    },
+                    attach[0, 2, 2, 1] = &gtk::Separator {},
+                    attach[0, 3, 1, 1] = &gtk::Label {
+                        set_text: "Result Header Definition:",
+                        set_halign: gtk::Align::End,
+                    },
+                    attach[1, 3, 1, 1]: headers = &TypeDef {
+                        set_hexpand: true,
+                        set_vexpand: true,
+                        set_halign: gtk::Align::Center,
+                        set_valign: gtk::Align::Center,
+                        set_orientation: gtk::Orientation::Horizontal,
+                        #[track(model.ui.changed(Ui::init_query()))]
+                        replicate: &model.ui.init_query,
+                    },
+                    attach[0, 4, 2, 1] = &gtk::Separator {},
+                    attach[0, 5, 1, 1] = &gtk::Label {
+                        set_text: "Input Definition:",
+                        set_halign: gtk::Align::End,
+                    },
+                    attach[1, 5, 1, 1]: input = &TypeDef {
+                        set_hexpand: true,
+                        set_vexpand: true,
+                        set_halign: gtk::Align::Center,
+                        set_valign: gtk::Align::Center,
+                        set_orientation: gtk::Orientation::Horizontal,
+                    },
+                    attach[0, 6, 2, 1] = &gtk::Separator {},
+                },
+                gtk::Label {
+                    #[track(model.ui.changed(Ui::status()))]
+                    set_text: model.ui.status.as_str(),
+                    set_halign: gtk::Align::Center,
+                }
+            },
+            connect_response[sender, sql_entry, name_entry, headers] => move |_, resp| {
+                let response = if resp == gtk::ResponseType::Accept {
+                    let table_header = headers.row_data();
+                    let name = name_entry.text();
+                    let name = name.trim();
+                    QueryDialogMsg::Accept(
+                        Query {
+                            sql: sql_entry.text().trim().to_string(),
+                            table_header,
+                        },
+                        name.to_string()
+                    )
+                } else {
+                    QueryDialogMsg::Cancel
+                };
+                sender.input(response);
+            }
+        }
+    }
+
+    additional_fields! {
+        add_button: gtk::Button,
+    }
+
+    fn post_view() {
+        let model: &QueryDialog = model;
+
+        if model.ui.changed(Ui::name_valid()) {
+            add_button.set_sensitive(model.ui.name_valid);
+        }
+        if model.ui.changed(Ui::ok_button_name()) {
+            add_button.set_label(model.ui.ok_button_name.as_str());
+        }
+    }
+
+    fn init(
+        parent_window: Self::Init,
+        root: &Self::Root,
+        sender: ComponentSender<Self>,
+    ) -> ComponentParts<Self> {
+        let model = QueryDialog {
             hidden: true,
             id: 0,
             names: Vec::new(),
             ui: Ui {
                 name_valid: false,
                 ok_button_name: String::new(),
-                init_query: Vec::new(),
-                name: "".to_string(),
-                sql: "".to_string(),
+                init_query: RowData::new(),
+                name: String::new(),
+                sql: String::new(),
+                status: String::new(),
                 tracker: 0,
             },
-        }
+        };
+
+        // this is a place-holder to generate the widgets struct. It is replaced shortly after.
+        let add_button = gtk::Button::new();
+
+        let mut widgets = view_output!();
+        widgets.add_button = widgets
+            .dialog
+            .add_button("add", gtk::ResponseType::Accept)
+            .downcast::<gtk::Button>()
+            .unwrap();
+        widgets
+            .dialog
+            .add_button("cancel", gtk::ResponseType::Cancel);
+
+        ComponentParts { model, widgets }
     }
 
-    fn update(
-        &mut self,
-        msg: QueryDialogMsg,
-        _components: &(),
-        _sender: Sender<QueryDialogMsg>,
-        parent_sender: Sender<AnalysisMsg>,
-    ) {
+    fn update(&mut self, message: QueryDialogMsg, sender: ComponentSender<Self>) {
         self.ui.reset();
-        match msg {
+        match message {
             QueryDialogMsg::Open {
                 query,
                 names,
@@ -87,11 +219,23 @@ impl ComponentUpdate<AnalysisModel> for QueryDialogModel {
                 self.names = names;
             }
             QueryDialogMsg::Accept(query, name) => {
-                self.hidden = true;
-                send!(
-                    parent_sender,
-                    AnalysisMsg::EditQueryResult(query, name, self.id)
-                );
+                if name.is_empty() {
+                    self.ui.set_status("Each query needs a name.".to_string());
+                } else if self.names.contains(&name) {
+                    self.ui.set_status("This name is not unique.".to_string());
+                } else if !query.table_header.has_entries() {
+                    self.ui
+                        .set_status("At least one table header entry is required.".to_string());
+                } else if !query.table_header.is_filled() {
+                    self.ui
+                        .set_status("All table header entries need a name.".to_string());
+                } else if !query.table_header.all_names_unique() {
+                    self.ui
+                        .set_status("All table header entries need to be unique.".to_string());
+                } else {
+                    self.hidden = true;
+                    sender.output(AnalysisMsg::EditQueryResult(query, name, self.id));
+                }
             }
             QueryDialogMsg::Cancel => {
                 self.hidden = true;
@@ -109,107 +253,5 @@ impl ComponentUpdate<AnalysisModel> for QueryDialogModel {
                 );
             }
         }
-    }
-}
-
-trait SetContent {
-    fn append_content(&self, widget: &impl IsA<gtk::Widget>);
-}
-
-impl SetContent for gtk::Dialog {
-    fn append_content(&self, widget: &impl IsA<gtk::Widget>) {
-        self.content_area().append(widget);
-    }
-}
-
-#[relm4_macros::widget(pub(crate))]
-impl Widgets<QueryDialogModel, AnalysisModel> for QueryDialogWidgets {
-    view! {
-        dialog = gtk::Dialog {
-            set_modal: true,
-            set_default_width: 1300,
-            set_visible: watch!(!model.hidden),
-
-            append_content: name_entry = &gtk::Entry {
-                set_hexpand: false,
-                set_halign: gtk::Align::Center,
-                set_text: track!(model.ui.changed(Ui::name()), model.ui.name.as_str()),
-
-                connect_changed(sender) => move |name| {
-                    send!(sender, QueryDialogMsg::NameChanged(name.text()));
-                },
-            },
-            append_content: sql_entry = &gtk::Entry {
-                set_hexpand: true,
-                set_halign: gtk::Align::Fill,
-                set_text: track!(model.ui.changed(Ui::sql()), model.ui.sql.as_str()),
-            },
-            append_content: headers = &TypeDef {
-                set_hexpand: true,
-                set_vexpand: true,
-                set_halign: gtk::Align::Center,
-                set_valign: gtk::Align::Center,
-                set_orientation: gtk::Orientation::Horizontal,
-                replicate: track!(model.ui.changed(Ui::init_query()), model.ui.init_query.as_slice()),
-            },
-
-            connect_response(sender, sql_entry, name_entry, headers) => move |_, resp| {
-                let response = if resp == gtk::ResponseType::Accept {
-                    let table_header = headers.row_data();
-                    let name = name_entry.text();
-                    let name = name.trim();
-                    if !table_header.is_empty() && table_header.iter().all(|row| !row.0.is_empty()) && !name.is_empty(){
-                        QueryDialogMsg::Accept(
-                            Query {
-                                sql: sql_entry.text().trim().to_string(),
-                                table_header,
-                            },
-                            name.to_string()
-                        )
-                    } else {
-                        QueryDialogMsg::Cancel
-                    }
-                } else {
-                    QueryDialogMsg::Cancel
-                };
-                send!(sender, response);
-            }
-        }
-    }
-
-    fn post_init() {
-        let content: gtk::Box = dialog.content_area();
-        content.set_hexpand(true);
-        content.set_vexpand(true);
-        content.set_halign(gtk::Align::Fill);
-        content.set_valign(gtk::Align::Center);
-        content.set_orientation(gtk::Orientation::Vertical);
-        content.set_margin_all(5);
-        content.set_spacing(5);
-        let add_button: gtk::Button = dialog
-            .add_button("add", gtk::ResponseType::Accept)
-            .downcast::<gtk::Button>()
-            .unwrap();
-        dialog.add_button("cancel", gtk::ResponseType::Cancel);
-    }
-
-    additional_fields! {
-        add_button: gtk::Button,
-    }
-
-    fn post_view() {
-        let model: &QueryDialogModel = model;
-
-        if model.ui.changed(Ui::name_valid()) {
-            add_button.set_sensitive(model.ui.name_valid);
-        }
-        if model.ui.changed(Ui::ok_button_name()) {
-            add_button.set_label(model.ui.ok_button_name.as_str());
-        }
-    }
-
-    fn post_connect_parent(&mut self, parent_widgets: &AnalysisWidgets) {
-        self.dialog
-            .set_transient_for(parent_widgets.main_window.as_ref());
     }
 }
