@@ -1,5 +1,5 @@
 use crate::analysis::edit_query_dialog::QueryDialog;
-// use crate::analysis::type_component::{TypeParent, Validity};
+use crate::analysis::type_component::Validity;
 use crate::combobox::AppendAll;
 use crate::Msg;
 use itertools::Itertools;
@@ -18,6 +18,7 @@ use std::rc::Rc;
 use tap::TapFallible;
 
 mod edit_query_dialog;
+mod type_component;
 mod type_def;
 
 #[derive(Debug)]
@@ -30,7 +31,7 @@ pub(crate) enum AnalysisMsg {
     ConnectDb(Rc<Connection>),
     QuerySelected(Option<usize>),
     NewQueryNameChanged(GString),
-    // ValidityChanged(Validity),
+    ValidityChanged(Validity),
 }
 
 #[tracker::track]
@@ -47,20 +48,14 @@ pub(crate) struct Analysis {
     query_selected: bool,
     #[tracker::do_not_track]
     query_dialog: Controller<edit_query_dialog::QueryDialog>,
-    // #[tracker::do_not_track]
-    // type_component: Controller<type_component::TypeModel>,
+    #[tracker::do_not_track]
+    type_component: Controller<type_component::Type>,
 }
 
 struct Data {
     store: gtk::ListStore,
     query_id: usize,
 }
-
-// impl TypeParent for Analysis {
-//     fn validity_changed(validity: Validity) -> Self::Msg {
-//         AnalysisMsg::ValidityChanged(validity)
-//     }
-// }
 
 #[relm4::component(pub(crate))]
 impl SimpleComponent for Analysis {
@@ -134,8 +129,8 @@ impl SimpleComponent for Analysis {
                         }
                     },
                 },
-                // attach[0, 4, 2, 1] = &gtk::Separator {},
-                // attach[0, 4, 2, 1]: components.type_component.root_widget(),
+                attach[0, 4, 2, 1] = &gtk::Separator {},
+                attach[0, 4, 2, 1]: model.type_component.widget(),
             },
             gtk::ScrolledWindow {
                 #[name(list)]
@@ -188,6 +183,15 @@ impl SimpleComponent for Analysis {
             .launch(parent_window)
             .forward(sender.input_sender(), identity);
 
+        let type_component =
+            type_component::Type::builder()
+                .launch(())
+                .forward(sender.input_sender(), |val_msg| match val_msg {
+                    type_component::ValidityMsg::ValidityChanged(val) => {
+                        AnalysisMsg::ValidityChanged(val)
+                    }
+                });
+
         let model = Analysis {
             analysis: None,
             queries: read_queries()
@@ -199,6 +203,7 @@ impl SimpleComponent for Analysis {
             selected_query: None,
             query_selected: false,
             query_dialog,
+            type_component,
             tracker: 0,
         };
 
@@ -270,7 +275,8 @@ impl SimpleComponent for Analysis {
                 let name = name.trim();
                 self.new_button_valid =
                     !name.is_empty() && !self.queries.iter().map(|(n, _)| n).any(|n| n == name);
-            } // AnalysisMsg::ValidityChanged(val) => println!("validity: {val:?}"),
+            }
+            AnalysisMsg::ValidityChanged(val) => println!("validity: {val:?}"),
         }
     }
 }
