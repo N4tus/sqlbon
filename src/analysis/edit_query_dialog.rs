@@ -1,10 +1,13 @@
+use crate::analysis::type_component::{TypeMsg, Validity};
 use crate::analysis::type_def::TypeDef;
-use crate::analysis::{Query, RowData};
+use crate::analysis::{type_component, Query, RowData};
 use crate::AnalysisMsg;
-use relm4::gtk;
 use relm4::gtk::glib::GString;
 use relm4::gtk::prelude::*;
-use relm4::{ComponentParts, ComponentSender, SimpleComponent, WidgetPlus};
+use relm4::{
+    gtk, Component, ComponentController, ComponentParts, ComponentSender, Controller,
+    SimpleComponent, WidgetPlus,
+};
 
 #[tracker::track]
 struct Ui {
@@ -26,6 +29,7 @@ pub(crate) struct QueryDialog {
     id: usize,
     names: Vec<String>,
     ui: Ui,
+    type_component: Controller<type_component::Type>,
 }
 
 #[derive(Debug)]
@@ -39,6 +43,7 @@ pub(crate) enum QueryDialogMsg {
     Accept(Query, String),
     Cancel,
     NameChanged(GString),
+    ValidityChanged(Validity),
 }
 
 #[relm4::component(pub(crate))]
@@ -112,13 +117,7 @@ impl SimpleComponent for QueryDialog {
                         set_text: "Input Definition:",
                         set_halign: gtk::Align::End,
                     },
-                    attach[1, 5, 1, 1]: input = &TypeDef {
-                        set_hexpand: true,
-                        set_vexpand: true,
-                        set_halign: gtk::Align::Center,
-                        set_valign: gtk::Align::Center,
-                        set_orientation: gtk::Orientation::Horizontal,
-                    },
+                    attach[1, 5, 1, 1]: model.type_component.widget(),
                     attach[0, 6, 2, 1] = &gtk::Separator {},
                 },
                 gtk::Label {
@@ -167,6 +166,15 @@ impl SimpleComponent for QueryDialog {
         root: &Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        let type_component =
+            type_component::Type::builder()
+                .launch(())
+                .forward(sender.input_sender(), |val_msg| match val_msg {
+                    type_component::ValidityMsg::ValidityChanged(val) => {
+                        QueryDialogMsg::ValidityChanged(val)
+                    }
+                });
+
         let model = QueryDialog {
             hidden: true,
             id: 0,
@@ -180,6 +188,7 @@ impl SimpleComponent for QueryDialog {
                 status: String::new(),
                 tracker: 0,
             },
+            type_component,
         };
 
         // this is a place-holder to generate the widgets struct. It is replaced shortly after.
@@ -211,11 +220,13 @@ impl SimpleComponent for QueryDialog {
 
                 self.hidden = false;
                 self.id = id;
-                self.ui.set_init_query(query.table_header);
+                self.ui.set_init_query(query.table_header.clone());
                 self.ui.set_name_valid(!current_name.is_empty());
                 self.ui.set_ok_button_name(ok_button_name);
                 self.ui.set_name(current_name.clone());
                 self.ui.set_sql(query.sql);
+                self.type_component
+                    .emit(TypeMsg::Replicate(query.table_header));
                 self.names = names;
             }
             QueryDialogMsg::Accept(query, name) => {
@@ -252,6 +263,7 @@ impl SimpleComponent for QueryDialog {
                             .any(|(_, n)| n == name),
                 );
             }
+            QueryDialogMsg::ValidityChanged(val) => println!("{val:#?}"),
         }
     }
 }

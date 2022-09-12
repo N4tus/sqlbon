@@ -4,9 +4,9 @@ use crate::analysis::{Analysis, AnalysisMsg};
 use crate::combobox::AppendAll;
 use crate::unit::Unit;
 use native_dialog::FileDialog;
-use relm4::gtk;
 use relm4::gtk::glib::{DateTime, GString};
 use relm4::gtk::prelude::*;
+use relm4::gtk::{self, STYLE_PROVIDER_PRIORITY_APPLICATION};
 use relm4::{
     Component, ComponentController, ComponentParts, ComponentSender, Controller, RelmApp,
     SimpleComponent, WidgetPlus,
@@ -634,6 +634,15 @@ impl SimpleComponent for App {
         root: &Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        let provider = gtk::CssProvider::new();
+        provider.load_from_data(b"entry.duplicate-name { border: 2px solid red; }");
+
+        gtk::StyleContext::add_provider_for_display(
+            &gtk::gdk::Display::default().expect("Could not connect to a display."),
+            &provider,
+            STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+
         let dialog = add_duplicate_alert::Dialog::builder()
             .launch(root.clone().upcast())
             .forward(sender.input_sender(), identity);
