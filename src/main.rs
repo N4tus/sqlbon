@@ -205,7 +205,6 @@ enum Msg {
     OpenCreateDbDialog,
     ConnectDb,
     CreateDb,
-    Init,
     CapitalizeItem(bool),
     ValidateStoreName(GString),
     ValidateStoreLocation(GString),
@@ -711,38 +710,6 @@ impl SimpleComponent for App {
         self.ui.reset_item_fields = false;
         self.ui.reset_store_fields = false;
         match message {
-            Msg::Init => {
-                if let Ok(file) = File::open("sqlbon_settings.json") {
-                    if let Ok(data) = serde_json::from_reader(file) {
-                        let data: Settings = data;
-                        if let Ok(conn) = Connection::open(&data.db_file) {
-                            let conn = Rc::new(conn);
-                            self.analysis.emit(AnalysisMsg::ConnectDb(Rc::clone(&conn)));
-                            self.conn = Some(conn);
-                            self.load_stores();
-                            self.load_receipts();
-                            self.ui.set_settings_db_path(data.db_file);
-                            self.ui
-                                .set_capitalize_item_names(data.capitalize_item_names);
-                            self.ui.set_page(4);
-                            self.ui.update_store_name_valid(NameStatus::connect);
-                            self.ui.update_store_location_valid(NameStatus::connect);
-                            self.ui.update_item_name_valid(NameStatus::connect);
-                            self.ui
-                                .set_settings_db_path_status("Successfully connected.".to_string());
-                        } else {
-                            self.ui.set_settings_db_path_status(format!(
-                                "'{}' is not a database file.",
-                                data.db_file
-                            ));
-                        }
-                    } else {
-                        self.ui.set_settings_db_path_status(
-                            "'sqlbon_settings.json' file is not valid.".to_string(),
-                        );
-                    }
-                }
-            }
             Msg::AddStore(store) => {
                 if let Some(conn) = &self.conn {
                     let store_name = store.name.trim();
