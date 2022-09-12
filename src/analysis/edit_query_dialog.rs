@@ -44,6 +44,7 @@ pub(crate) enum QueryDialogMsg {
     Cancel,
     NameChanged(GString),
     ValidityChanged(Validity),
+    Test,
 }
 
 #[relm4::component(pub(crate))]
@@ -119,6 +120,12 @@ impl SimpleComponent for QueryDialog {
                     },
                     attach[1, 5, 1, 1]: model.type_component.widget(),
                     attach[0, 6, 2, 1] = &gtk::Separator {},
+                },
+                gtk::Button {
+                    set_label: "Test",
+                    connect_clicked[sender] => move |_| {
+                        sender.input(QueryDialogMsg::Test);
+                    },
                 },
                 gtk::Label {
                     #[track(model.ui.changed(Ui::status()))]
@@ -264,6 +271,11 @@ impl SimpleComponent for QueryDialog {
                 );
             }
             QueryDialogMsg::ValidityChanged(val) => println!("{val:#?}"),
+            QueryDialogMsg::Test => {
+                let state = &self.type_component.state().get().model;
+                let data = state.get_row_data();
+                println!("row data: {data:#?}");
+            }
         }
     }
 }

@@ -5,10 +5,7 @@ use relm4::factory::{
 };
 use relm4::gtk::glib::GString;
 use relm4::gtk::{self, prelude::*};
-use relm4::{
-    ComponentController, ComponentParts, ComponentSender, Controller, RelmIterChildrenExt,
-    SimpleComponent,
-};
+use relm4::{ComponentParts, ComponentSender, SimpleComponent};
 use std::collections::HashSet;
 use std::fmt::Debug;
 
@@ -31,13 +28,13 @@ enum RowMsg {
 }
 
 impl Row {
-    fn new() -> Self {
+    fn new(name: String, ty: ColumnType) -> Self {
         Row {
-            name: String::new(),
-            ty: ColumnType::String,
+            name,
+            ty,
             duplicate: false,
-            up: false,
-            down: false,
+            up: true,
+            down: true,
         }
     }
 }
@@ -51,7 +48,7 @@ enum RowValid {
 #[relm4::factory]
 impl FactoryComponent for Row {
     type CommandOutput = ();
-    type Init = ();
+    type Init = (String, ColumnType);
     type Input = RowValid;
     type Output = RowMsg;
     type ParentInput = TypeMsg;
@@ -63,7 +60,7 @@ impl FactoryComponent for Row {
         gtk::Box{
             set_orientation: gtk::Orientation::Horizontal,
             #[name(name_entry)]
-            gtk::Entry {
+            gtk::Entry::builder().text(&self.name).build() {
                 connect_changed[sender, index] => move |name_entry| {
                     sender.input(RowValid::NameChanged(index.clone(), name_entry.text()));
                 },
@@ -126,11 +123,11 @@ impl FactoryComponent for Row {
     }
 
     fn init_model(
-        _value: Self::Init,
+        (name, ty): Self::Init,
         _index: &DynamicIndex,
         _sender: FactoryComponentSender<Self>,
     ) -> Self {
-        Row::new()
+        Row::new(name, ty)
     }
 
     fn update(&mut self, message: Self::Input, sender: FactoryComponentSender<Self>) {
@@ -166,10 +163,20 @@ pub(crate) enum Validity {
 
 pub(crate) struct Type {
     ty: FactoryVecDeque<Row>,
-    set_row_data: Option<RowData>,
     is_filled: bool,
     /// This field may only contain a useful value if [`Type::is_filled`] is true
     has_duplicates: bool,
+}
+
+impl Type {
+    pub(crate) fn get_row_data(&self) -> RowData {
+        RowData(
+            self.ty
+                .iter()
+                .map(|row| (row.name.trim().to_string(), row.ty))
+                .collect(),
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -242,53 +249,6 @@ pub(crate) enum ValidityMsg {
     ValidityChanged(Validity),
 }
 
-pub(crate) trait GetRowData {
-    fn get_row_data(&self) -> RowData;
-}
-
-impl GetRowData for Controller<Type> {
-    fn get_row_data(&self) -> RowData {
-        let rows = self
-            .widget()
-            .first_child()
-            .unwrap()
-            .downcast::<gtk::Box>()
-            .unwrap()
-            .iter_children()
-            .map(|ch| {
-                let row = ch.downcast::<gtk::Box>().unwrap();
-                let name = row.first_child().unwrap();
-                let ty = name.next_sibling().unwrap();
-                let name = name.downcast::<gtk::Entry>().unwrap();
-                let ty = ty.downcast::<gtk::ComboBoxText>().unwrap();
-                let name = name.text().trim().to_string();
-                let ty = ty.active().unwrap().try_into().unwrap();
-                (name, ty)
-            })
-            .collect();
-        RowData(rows)
-    }
-}
-
-trait Replicate {
-    fn replicate(&self, row_data: &RowData);
-}
-
-impl Replicate for gtk::Box {
-    fn replicate(&self, row_data: &RowData) {
-        for (row_box, row) in self.iter_children().zip(&row_data.0) {
-            let row_box = row_box.downcast::<gtk::Box>().unwrap();
-            let name = row_box.first_child().unwrap();
-            let ty = name.next_sibling().unwrap();
-            let name = name.downcast::<gtk::Entry>().unwrap();
-            let ty = ty.downcast::<gtk::ComboBoxText>().unwrap();
-
-            name.set_text(row.0.as_str());
-            ty.set_active(Some(row.1.into()));
-        }
-    }
-}
-
 #[relm4::component(pub(crate))]
 impl SimpleComponent for Type {
     type Input = TypeMsg;
@@ -307,8 +267,6 @@ impl SimpleComponent for Type {
             #[local]
             row_box -> gtk::Box {
                 set_orientation: gtk::Orientation::Vertical,
-                #[watch]
-                replicate?: &model.set_row_data,
             },
             gtk::Button {
                 set_label: "new",
@@ -330,7 +288,6 @@ impl SimpleComponent for Type {
 
         let model = Type {
             ty,
-            set_row_data: None,
             is_filled: false,
             has_duplicates: false,
         };
@@ -341,23 +298,25 @@ impl SimpleComponent for Type {
     }
 
     fn update(&mut self, message: Self::Input, sender: ComponentSender<Self>) {
-        self.set_row_data = None;
         let mut types = self.ty.guard();
+        let send = |val: Validity| {
+            sender.output(ValidityMsg::ValidityChanged(val));
+        };
         match message {
             TypeMsg::Add => {
-                types.push_back(());
+                types.push_back((String::new(), ColumnType::String));
                 types.restore_move_valid();
                 if self.is_filled {
-                    sender.output(ValidityMsg::ValidityChanged(Validity::NotFilled));
+                    send(Validity::NotFilled);
                     self.is_filled = false;
                 }
             }
             TypeMsg::AddAbove(idx) => {
                 let idx = idx.current_index();
-                types.insert(idx, ());
+                types.insert(idx, (String::new(), ColumnType::String));
                 types.restore_move_valid();
                 if self.is_filled {
-                    sender.output(ValidityMsg::ValidityChanged(Validity::NotFilled));
+                    send(Validity::NotFilled);
                     self.is_filled = false;
                 }
             }
@@ -366,7 +325,7 @@ impl SimpleComponent for Type {
                 types.remove(idx);
                 types.restore_move_valid();
                 if types.is_empty() {
-                    sender.output(ValidityMsg::ValidityChanged(Validity::NoRows));
+                    send(Validity::NoRows);
                     self.is_filled = false;
                 } else {
                     // if filled, deleting wont empty a row
@@ -382,10 +341,10 @@ impl SimpleComponent for Type {
                         (false, false) => {}
                         (false, true) => {
                             if has_duplicates {
-                                sender.output(ValidityMsg::ValidityChanged(Validity::Duplicates));
+                                send(Validity::Duplicates);
                                 self.has_duplicates = true;
                             } else {
-                                sender.output(ValidityMsg::ValidityChanged(Validity::Valid));
+                                send(Validity::Valid);
                                 self.has_duplicates = false;
                             }
                             self.is_filled = true;
@@ -395,7 +354,7 @@ impl SimpleComponent for Type {
                         }
                         (true, true) => {
                             if self.has_duplicates && !has_duplicates {
-                                sender.output(ValidityMsg::ValidityChanged(Validity::Valid));
+                                send(Validity::Valid);
                                 self.has_duplicates = false;
                             }
                         }
@@ -419,10 +378,23 @@ impl SimpleComponent for Type {
             }
             TypeMsg::Replicate(row_data) => {
                 types.clear();
-                for _ in &row_data.0 {
-                    types.push_back(());
+                for (name, ty) in row_data.0 {
+                    types.push_back((name, ty));
                 }
-                self.set_row_data = Some(row_data)
+                types.restore_move_valid();
+
+                self.is_filled = types.is_filled();
+                self.has_duplicates = types.check_duplicates();
+                let is_empty = types.is_empty();
+                if is_empty {
+                    send(Validity::NoRows);
+                } else if !self.is_filled {
+                    send(Validity::NotFilled);
+                } else if self.has_duplicates {
+                    send(Validity::Duplicates);
+                } else {
+                    send(Validity::Valid);
+                }
             }
             TypeMsg::NameChanged(idx, prev_not_empty) => {
                 let idx = idx.current_index();
@@ -437,7 +409,7 @@ impl SimpleComponent for Type {
                     (true, false) => {
                         // now empty
                         if self.is_filled {
-                            sender.output(ValidityMsg::ValidityChanged(Validity::NotFilled));
+                            send(Validity::NotFilled);
                             self.is_filled = false;
                         }
                     }
@@ -448,11 +420,11 @@ impl SimpleComponent for Type {
                             self.is_filled = true;
                             if has_duplicates {
                                 // duplicates
-                                sender.output(ValidityMsg::ValidityChanged(Validity::Duplicates));
+                                send(Validity::Duplicates);
                                 self.has_duplicates = true;
                             } else {
                                 // valid
-                                sender.output(ValidityMsg::ValidityChanged(Validity::Valid));
+                                send(Validity::Valid);
                                 self.has_duplicates = false;
                             }
                         }
@@ -463,12 +435,11 @@ impl SimpleComponent for Type {
                         if self.is_filled {
                             match (self.has_duplicates, has_duplicates) {
                                 (false, true) => {
-                                    sender
-                                        .output(ValidityMsg::ValidityChanged(Validity::Duplicates));
+                                    send(Validity::Duplicates);
                                     self.has_duplicates = true;
                                 }
                                 (true, false) => {
-                                    sender.output(ValidityMsg::ValidityChanged(Validity::Valid));
+                                    send(Validity::Valid);
                                     self.has_duplicates = false;
                                 }
                                 _ => {}
