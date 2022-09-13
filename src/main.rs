@@ -21,6 +21,7 @@ use std::rc::Rc;
 mod add_duplicate_alert;
 mod analysis;
 mod combobox;
+mod dialog_ext;
 mod schema;
 mod unit;
 

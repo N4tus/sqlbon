@@ -1,6 +1,6 @@
 use crate::analysis::type_component::{TypeMsg, Validity};
-use crate::analysis::type_def::TypeDef;
 use crate::analysis::{type_component, Query, RowData};
+use crate::dialog_ext::AppendDialog;
 use crate::AnalysisMsg;
 use relm4::gtk::glib::GString;
 use relm4::gtk::prelude::*;
@@ -12,6 +12,8 @@ use relm4::{
 #[tracker::track]
 struct Ui {
     name_valid: bool,
+    output_valid: bool,
+    input_valid: bool,
     #[tracker::no_eq]
     ok_button_name: String,
     #[tracker::no_eq]
@@ -21,7 +23,11 @@ struct Ui {
     #[tracker::no_eq]
     sql: String,
     #[tracker::no_eq]
-    status: String,
+    input_status: String,
+    #[tracker::no_eq]
+    output_status: String,
+    #[tracker::no_eq]
+    name_status: String,
 }
 
 pub(crate) struct QueryDialog {
@@ -29,7 +35,8 @@ pub(crate) struct QueryDialog {
     id: usize,
     names: Vec<String>,
     ui: Ui,
-    type_component: Controller<type_component::Type>,
+    output_types: Controller<type_component::Type>,
+    input_types: Controller<type_component::Type>,
 }
 
 #[derive(Debug)]
@@ -40,11 +47,14 @@ pub(crate) enum QueryDialogMsg {
         names: Vec<String>,
         ok_button_name: String,
     },
-    Accept(Query, String),
+    Accept {
+        name: String,
+        sql: String,
+    },
     Cancel,
     NameChanged(GString),
-    ValidityChanged(Validity),
-    Test,
+    OutputValidityChanged(Validity),
+    InputValidityChanged(Validity),
 }
 
 #[relm4::component(pub(crate))]
@@ -63,7 +73,7 @@ impl SimpleComponent for QueryDialog {
             set_default_width: 1300,
             #[watch]
             set_visible: !model.hidden,
-            gtk::Box {
+            append = &gtk::Box {
                 set_hexpand: true,
                 set_vexpand: true,
                 set_halign: gtk::Align::Fill,
@@ -99,52 +109,43 @@ impl SimpleComponent for QueryDialog {
                         #[track(model.ui.changed(Ui::sql()))]
                         set_text: model.ui.sql.as_str(),
                     },
-                    attach[0, 2, 2, 1] = &gtk::Separator {},
-                    attach[0, 3, 1, 1] = &gtk::Label {
-                        set_text: "Result Header Definition:",
+                    attach[1, 2, 1, 1] = &gtk::Label {
+                        #[track(model.ui.changed(Ui::name_status()))]
+                        set_text: model.ui.name_status.as_str(),
+                        set_halign: gtk::Align::Center,
+                    },
+                    attach[0, 3, 2, 1] = &gtk::Separator {},
+                    attach[0, 4, 1, 1] = &gtk::Label {
+                        set_text: "Header Definition:",
                         set_halign: gtk::Align::End,
                     },
-                    attach[1, 3, 1, 1]: headers = &TypeDef {
-                        set_hexpand: true,
-                        set_vexpand: true,
+                    attach[1, 4, 1, 1]: model.output_types.widget(),
+                    attach[1, 5, 1, 1] = &gtk::Label {
+                        #[track(model.ui.changed(Ui::output_status()))]
+                        set_text: model.ui.output_status.as_str(),
                         set_halign: gtk::Align::Center,
-                        set_valign: gtk::Align::Center,
-                        set_orientation: gtk::Orientation::Horizontal,
-                        #[track(model.ui.changed(Ui::init_query()))]
-                        replicate: &model.ui.init_query,
                     },
-                    attach[0, 4, 2, 1] = &gtk::Separator {},
-                    attach[0, 5, 1, 1] = &gtk::Label {
+                    attach[0, 6, 2, 1] = &gtk::Separator {},
+                    attach[0, 7, 1, 1] = &gtk::Label {
                         set_text: "Input Definition:",
                         set_halign: gtk::Align::End,
                     },
-                    attach[1, 5, 1, 1]: model.type_component.widget(),
-                    attach[0, 6, 2, 1] = &gtk::Separator {},
-                },
-                gtk::Button {
-                    set_label: "Test",
-                    connect_clicked[sender] => move |_| {
-                        sender.input(QueryDialogMsg::Test);
+                    attach[1, 7, 1, 1]: model.input_types.widget(),
+                    attach[1, 8, 1, 1] = &gtk::Label {
+                        #[track(model.ui.changed(Ui::input_status()))]
+                        set_text: model.ui.input_status.as_str(),
+                        set_halign: gtk::Align::Center,
                     },
                 },
-                gtk::Label {
-                    #[track(model.ui.changed(Ui::status()))]
-                    set_text: model.ui.status.as_str(),
-                    set_halign: gtk::Align::Center,
-                }
             },
-            connect_response[sender, sql_entry, name_entry, headers] => move |_, resp| {
+            connect_response[sender, sql_entry, name_entry] => move |_, resp| {
                 let response = if resp == gtk::ResponseType::Accept {
-                    let table_header = headers.row_data();
-                    let name = name_entry.text();
-                    let name = name.trim();
-                    QueryDialogMsg::Accept(
-                        Query {
-                            sql: sql_entry.text().trim().to_string(),
-                            table_header,
-                        },
-                        name.to_string()
-                    )
+                    let name = name_entry.text().trim().to_string();
+                    let sql = sql_entry.text().trim().to_string();
+                    QueryDialogMsg::Accept{
+                        sql,
+                        name,
+                    }
                 } else {
                     QueryDialogMsg::Cancel
                 };
@@ -159,9 +160,15 @@ impl SimpleComponent for QueryDialog {
 
     fn post_view() {
         let model: &QueryDialog = model;
+        let add_button: &gtk::Button = add_button;
 
-        if model.ui.changed(Ui::name_valid()) {
-            add_button.set_sensitive(model.ui.name_valid);
+        if model
+            .ui
+            .changed(Ui::name_valid() | Ui::output_valid() | Ui::input_valid())
+        {
+            add_button.set_sensitive(
+                model.ui.name_valid && model.ui.output_valid && model.ui.input_valid,
+            );
         }
         if model.ui.changed(Ui::ok_button_name()) {
             add_button.set_label(model.ui.ok_button_name.as_str());
@@ -173,12 +180,20 @@ impl SimpleComponent for QueryDialog {
         root: &Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
-        let type_component =
+        let input_types =
             type_component::Type::builder()
-                .launch(())
+                .launch(0)
                 .forward(sender.input_sender(), |val_msg| match val_msg {
                     type_component::ValidityMsg::ValidityChanged(val) => {
-                        QueryDialogMsg::ValidityChanged(val)
+                        QueryDialogMsg::InputValidityChanged(val)
+                    }
+                });
+        let output_types =
+            type_component::Type::builder()
+                .launch(1)
+                .forward(sender.input_sender(), |val_msg| match val_msg {
+                    type_component::ValidityMsg::ValidityChanged(val) => {
+                        QueryDialogMsg::OutputValidityChanged(val)
                     }
                 });
 
@@ -188,14 +203,19 @@ impl SimpleComponent for QueryDialog {
             names: Vec::new(),
             ui: Ui {
                 name_valid: false,
+                output_valid: false,
+                input_valid: false,
                 ok_button_name: String::new(),
                 init_query: RowData::new(),
                 name: String::new(),
                 sql: String::new(),
-                status: String::new(),
+                input_status: String::new(),
+                output_status: String::new(),
+                name_status: String::new(),
                 tracker: 0,
             },
-            type_component,
+            output_types,
+            input_types,
         };
 
         // this is a place-holder to generate the widgets struct. It is replaced shortly after.
@@ -232,27 +252,22 @@ impl SimpleComponent for QueryDialog {
                 self.ui.set_ok_button_name(ok_button_name);
                 self.ui.set_name(current_name.clone());
                 self.ui.set_sql(query.sql);
-                self.type_component
+                self.output_types
                     .emit(TypeMsg::Replicate(query.table_header));
+                self.input_types.emit(TypeMsg::Replicate(query.query_input));
                 self.names = names;
             }
-            QueryDialogMsg::Accept(query, name) => {
-                if name.is_empty() {
-                    self.ui.set_status("Each query needs a name.".to_string());
-                } else if self.names.contains(&name) {
-                    self.ui.set_status("This name is not unique.".to_string());
-                } else if !query.table_header.has_entries() {
-                    self.ui
-                        .set_status("At least one table header entry is required.".to_string());
-                } else if !query.table_header.is_filled() {
-                    self.ui
-                        .set_status("All table header entries need a name.".to_string());
-                } else if !query.table_header.all_names_unique() {
-                    self.ui
-                        .set_status("All table header entries need to be unique.".to_string());
-                } else {
-                    self.hidden = true;
+            QueryDialogMsg::Accept { name, sql } => {
+                if self.ui.input_valid && self.ui.output_valid {
+                    let table_header = self.output_types.state().get().model.get_row_data();
+                    let query_input = self.input_types.state().get().model.get_row_data();
+                    let query = Query {
+                        sql,
+                        table_header,
+                        query_input,
+                    };
                     sender.output(AnalysisMsg::EditQueryResult(query, name, self.id));
+                    self.hidden = true;
                 }
             }
             QueryDialogMsg::Cancel => {
@@ -260,21 +275,55 @@ impl SimpleComponent for QueryDialog {
             }
             QueryDialogMsg::NameChanged(name) => {
                 let name = name.trim();
-                self.ui.set_name_valid(
-                    !name.is_empty()
-                        && !self
-                            .names
-                            .iter()
-                            .enumerate()
-                            .filter(|(i, _)| *i != self.id)
-                            .any(|(_, n)| n == name),
-                );
+                let is_filled = !name.is_empty();
+                if is_filled {
+                    let is_name_unique = self
+                        .names
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| *i != self.id)
+                        .all(|(_, n)| n != name);
+                    if is_name_unique {
+                        self.ui.set_name_status(String::new());
+                        self.ui.set_name_valid(true);
+                    } else {
+                        self.ui
+                            .set_name_status("This name is not unique.".to_string());
+                        self.ui.set_name_valid(false);
+                    }
+                } else {
+                    self.ui
+                        .set_name_status("Each query needs a name.".to_string());
+                    self.ui.set_name_valid(false);
+                }
             }
-            QueryDialogMsg::ValidityChanged(val) => println!("{val:#?}"),
-            QueryDialogMsg::Test => {
-                let state = &self.type_component.state().get().model;
-                let data = state.get_row_data();
-                println!("row data: {data:#?}");
+            QueryDialogMsg::InputValidityChanged(val) => {
+                self.ui.set_input_valid(val == Validity::Valid);
+                match val {
+                    Validity::NotEnoughRows => {}
+                    Validity::NotFilled => self
+                        .ui
+                        .set_input_status("All query input entries need a name.".to_string()),
+                    Validity::Duplicates => self
+                        .ui
+                        .set_input_status("All query input entries need to be unique.".to_string()),
+                    Validity::Valid => self.ui.set_input_status(String::new()),
+                }
+            }
+            QueryDialogMsg::OutputValidityChanged(val) => {
+                self.ui.set_output_valid(val == Validity::Valid);
+                match val {
+                    Validity::NotEnoughRows => self.ui.set_output_status(
+                        "At least one table header entry is required.".to_string(),
+                    ),
+                    Validity::NotFilled => self
+                        .ui
+                        .set_output_status("All table header entries need a name.".to_string()),
+                    Validity::Duplicates => self.ui.set_output_status(
+                        "All table header entries need to be unique.".to_string(),
+                    ),
+                    Validity::Valid => self.ui.set_output_status(String::new()),
+                }
             }
         }
     }

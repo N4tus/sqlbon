@@ -155,7 +155,7 @@ impl FactoryComponent for Row {
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub(crate) enum Validity {
-    NoRows,
+    NotEnoughRows,
     NotFilled,
     Duplicates,
     Valid,
@@ -166,6 +166,7 @@ pub(crate) struct Type {
     is_filled: bool,
     /// This field may only contain a useful value if [`Type::is_filled`] is true
     has_duplicates: bool,
+    required_rows: usize,
 }
 
 impl Type {
@@ -253,7 +254,7 @@ pub(crate) enum ValidityMsg {
 impl SimpleComponent for Type {
     type Input = TypeMsg;
     type Output = ValidityMsg;
-    type Init = ();
+    type Init = usize;
     type Widgets = TypeWidgets;
 
     view! {
@@ -278,7 +279,7 @@ impl SimpleComponent for Type {
     }
 
     fn init(
-        _init: Self::Init,
+        init: Self::Init,
         root: &Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
@@ -290,6 +291,7 @@ impl SimpleComponent for Type {
             ty,
             is_filled: false,
             has_duplicates: false,
+            required_rows: init,
         };
 
         let widgets = view_output!();
@@ -324,8 +326,8 @@ impl SimpleComponent for Type {
                 let idx = idx.current_index();
                 types.remove(idx);
                 types.restore_move_valid();
-                if types.is_empty() {
-                    send(Validity::NoRows);
+                if types.len() < self.required_rows {
+                    send(Validity::NotEnoughRows);
                     self.is_filled = false;
                 } else {
                     // if filled, deleting wont empty a row
@@ -366,6 +368,9 @@ impl SimpleComponent for Type {
                 if let Some(new_idx) = idx.checked_sub(1) {
                     types.move_to(idx, new_idx);
                     types.restore_move_valid();
+                    if self.has_duplicates {
+                        types.check_duplicates();
+                    }
                 }
             }
             TypeMsg::MoveDown(idx) => {
@@ -374,6 +379,9 @@ impl SimpleComponent for Type {
                 if new_idx < types.len() {
                     types.move_to(idx, new_idx);
                     types.restore_move_valid();
+                    if self.has_duplicates {
+                        types.check_duplicates();
+                    }
                 }
             }
             TypeMsg::Replicate(row_data) => {
@@ -385,9 +393,8 @@ impl SimpleComponent for Type {
 
                 self.is_filled = types.is_filled();
                 self.has_duplicates = types.check_duplicates();
-                let is_empty = types.is_empty();
-                if is_empty {
-                    send(Validity::NoRows);
+                if types.len() < self.required_rows {
+                    send(Validity::NotEnoughRows);
                 } else if !self.is_filled {
                     send(Validity::NotFilled);
                 } else if self.has_duplicates {

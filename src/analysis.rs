@@ -1,7 +1,6 @@
 use crate::analysis::edit_query_dialog::QueryDialog;
 use crate::combobox::AppendAll;
 use crate::Msg;
-use itertools::Itertools;
 use relm4::gtk;
 use relm4::gtk::glib::{GString, Type, Value};
 use relm4::gtk::prelude::*;
@@ -18,7 +17,6 @@ use tap::TapFallible;
 
 mod edit_query_dialog;
 mod type_component;
-mod type_def;
 
 #[derive(Debug)]
 pub(crate) enum AnalysisMsg {
@@ -345,24 +343,13 @@ impl RowData {
     pub(crate) fn new() -> Self {
         RowData(Vec::new())
     }
-
-    pub(crate) fn is_filled(&self) -> bool {
-        self.0.iter().all(|row| !row.0.is_empty())
-    }
-
-    pub(crate) fn has_entries(&self) -> bool {
-        !self.0.is_empty()
-    }
-
-    pub(crate) fn all_names_unique(&self) -> bool {
-        self.0.iter().unique_by(|(n, _)| n).count() == self.0.len()
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Query {
     sql: String,
     table_header: RowData,
+    query_input: RowData,
 }
 
 impl Query {
@@ -370,6 +357,7 @@ impl Query {
         Query {
             sql: String::new(),
             table_header: RowData::new(),
+            query_input: RowData::new(),
         }
     }
 }
