@@ -73,7 +73,7 @@ impl FactoryComponent for Row {
                         ColumnType::Number.to_string(),
                         ColumnType::Date.to_string(),
                     ],
-                    Some(0),
+                    Some(self.ty.into()),
                 ),
                 connect_changed[sender] => move |type_box| {
                     sender.input(RowValid::TypeChanged(type_box.active().unwrap().try_into().unwrap()));
