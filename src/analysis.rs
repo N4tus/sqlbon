@@ -1,8 +1,9 @@
 use crate::analysis::edit_query_dialog::QueryDialog;
+use crate::analysis::input_values::InputValue;
 use crate::combobox::AppendAll;
 use crate::Msg;
 use relm4::gtk;
-use relm4::gtk::glib::{GString, Type, Value};
+use relm4::gtk::glib::{DateTime, GString, Type, Value};
 use relm4::gtk::prelude::*;
 use relm4::{
     Component, ComponentController, ComponentParts, ComponentSender, Controller, SimpleComponent,
@@ -13,9 +14,10 @@ use std::convert::identity;
 use std::error::Error;
 use std::fs::File;
 use std::rc::Rc;
-use tap::TapFallible;
+use tap::{Pipe, TapFallible};
 
 mod edit_query_dialog;
+mod input_values;
 mod type_component;
 
 #[derive(Debug)]
@@ -28,6 +30,7 @@ pub(crate) enum AnalysisMsg {
     ConnectDb(Rc<Connection>),
     QuerySelected(Option<usize>),
     NewQueryNameChanged(GString),
+    Test(usize),
 }
 
 #[tracker::track]
@@ -44,6 +47,8 @@ pub(crate) struct Analysis {
     query_selected: bool,
     #[tracker::do_not_track]
     query_dialog: Controller<edit_query_dialog::QueryDialog>,
+    #[tracker::do_not_track]
+    input_values: Controller<input_values::InputValue>,
 }
 
 struct Data {
@@ -123,6 +128,14 @@ impl SimpleComponent for Analysis {
                         }
                     },
                 },
+                attach[0, 4, 2, 1] = &gtk::Button {
+                    set_label: "Test",
+                    connect_clicked[sender, selected_query] => move |_| {
+                        if let Some(id) = selected_query.active() {
+                            sender.input(AnalysisMsg::Test(id as usize));
+                        }
+                    }
+                }
             },
             gtk::ScrolledWindow {
                 #[name(list)]
@@ -132,6 +145,7 @@ impl SimpleComponent for Analysis {
                     set_valign: gtk::Align::Center,
                 },
             },
+            append: model.input_values.widget(),
         }
     }
 
@@ -140,14 +154,14 @@ impl SimpleComponent for Analysis {
         if model.changed(Analysis::analysis()) {
             if let Some(data) = &model.analysis {
                 if let Some((_, q)) = model.queries.get(data.query_id) {
-                    for (i, (q, _)) in q.table_header.0.iter().enumerate() {
+                    for (i, row_entry) in q.table_header.0.iter().enumerate() {
                         let i: i32 = i.try_into().unwrap();
                         if let Some(column) = list.column(i) {
-                            column.set_title(q);
+                            column.set_title(&row_entry.name);
                         } else {
                             let cell = gtk::CellRendererText::new();
                             let column = gtk::TreeViewColumn::new();
-                            column.set_title(q);
+                            column.set_title(&row_entry.name);
                             column.pack_start(&cell, true);
                             column.set_attributes(&cell, &[("text", i)]);
                             column.set_sort_column_id(i);
@@ -175,6 +189,8 @@ impl SimpleComponent for Analysis {
             .launch(parent_window)
             .forward(sender.input_sender(), identity);
 
+        let input_values = InputValue::builder().launch(()).detach();
+
         let model = Analysis {
             analysis: None,
             queries: read_queries()
@@ -186,6 +202,7 @@ impl SimpleComponent for Analysis {
             selected_query: None,
             query_selected: false,
             query_dialog,
+            input_values,
             tracker: 0,
         };
 
@@ -258,6 +275,12 @@ impl SimpleComponent for Analysis {
                 self.new_button_valid =
                     !name.is_empty() && !self.queries.iter().map(|(n, _)| n).any(|n| n == name);
             }
+            AnalysisMsg::Test(id) => {
+                let (name, input) = self.queries[id]
+                    .pipe_ref(|(name, query)| (name.clone(), query.query_input.clone()));
+                self.input_values
+                    .emit(input_values::InputValueMsg::Replicate(name, input));
+            }
         }
     }
 }
@@ -269,9 +292,21 @@ pub(crate) enum ColumnType {
     Date,
 }
 
-enum ColumnTypeValue {
+#[derive(Debug, Clone)]
+pub(crate) enum ColumnTypeValue {
     String(String),
     Number(i64),
+    Date(String),
+}
+
+impl ColumnTypeValue {
+    fn is_column_type(&self, ty: ColumnType) -> bool {
+        match self {
+            ColumnTypeValue::String(_) => ty == ColumnType::String,
+            ColumnTypeValue::Number(_) => ty == ColumnType::Number,
+            ColumnTypeValue::Date(_) => ty == ColumnType::Date,
+        }
+    }
 }
 
 impl ToString for ColumnType {
@@ -289,6 +324,7 @@ impl ToValue for ColumnTypeValue {
         match self {
             ColumnTypeValue::String(s) => s.to_value(),
             ColumnTypeValue::Number(n) => n.to_value(),
+            ColumnTypeValue::Date(d) => d.to_value(),
         }
     }
 
@@ -296,6 +332,17 @@ impl ToValue for ColumnTypeValue {
         match self {
             ColumnTypeValue::String(s) => s.value_type(),
             ColumnTypeValue::Number(n) => n.value_type(),
+            ColumnTypeValue::Date(d) => d.value_type(),
+        }
+    }
+}
+
+impl From<ColumnType> for u32 {
+    fn from(ty: ColumnType) -> Self {
+        match ty {
+            ColumnType::String => 0,
+            ColumnType::Number => 1,
+            ColumnType::Date => 2,
         }
     }
 }
@@ -326,18 +373,32 @@ impl TryFrom<u32> for ColumnType {
     }
 }
 
-impl From<ColumnType> for u32 {
-    fn from(ct: ColumnType) -> Self {
-        match ct {
-            ColumnType::String => 0,
-            ColumnType::Number => 1,
-            ColumnType::Date => 2,
+impl From<ColumnType> for ColumnTypeValue {
+    fn from(ty: ColumnType) -> Self {
+        match ty {
+            ColumnType::String => ColumnTypeValue::String(String::new()),
+            ColumnType::Number => ColumnTypeValue::Number(0),
+            ColumnType::Date => ColumnTypeValue::Date(
+                DateTime::now_local()
+                    .unwrap()
+                    .format("%F")
+                    .unwrap()
+                    .to_string(),
+            ),
         }
     }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct RowData(pub(crate) Vec<(String, ColumnType)>);
+pub(crate) struct RowEntry {
+    name: String,
+    ty: ColumnType,
+    #[serde(skip)]
+    id: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct RowData(pub(crate) Vec<RowEntry>);
 
 impl RowData {
     pub(crate) fn new() -> Self {
@@ -375,22 +436,26 @@ impl Analysis {
                     .table_header
                     .0
                     .iter()
-                    .map(|&(_, ty)| ty.into())
+                    .map(|row_entry| row_entry.ty.into())
                     .collect();
 
                 let store = gtk::ListStore::new(ctypes.as_slice());
                 let mut rows = stmt.query([]).unwrap();
                 while let Some(row) = rows.next()? {
                     let mut values = Vec::with_capacity(query.table_header.0.len());
-                    for (i, (_, cty)) in query.table_header.0.iter().enumerate() {
-                        match *cty {
-                            ColumnType::String | ColumnType::Date => {
+                    for (i, row_entry) in query.table_header.0.iter().enumerate() {
+                        match row_entry.ty {
+                            ColumnType::String => {
                                 let v: String = row.get(i)?;
                                 values.push(ColumnTypeValue::String(v));
                             }
                             ColumnType::Number => {
                                 let v: i64 = row.get(i)?;
                                 values.push(ColumnTypeValue::Number(v));
+                            }
+                            ColumnType::Date => {
+                                let v: String = row.get(i)?;
+                                values.push(ColumnTypeValue::Date(v));
                             }
                         }
                     }
@@ -426,6 +491,18 @@ fn save_queries(queries: &[(String, Query)]) -> std::io::Result<()> {
 
 fn read_queries() -> std::io::Result<Vec<(String, Query)>> {
     let file = File::open("./sqlbon_queries.json")?;
-    let data = serde_json::from_reader(file)?;
+    let mut data: Vec<(String, Query)> = serde_json::from_reader(file)?;
+    for (_, q) in &mut data {
+        let mut id_counter = 0;
+        for row in &mut q.table_header.0 {
+            row.id = id_counter;
+            id_counter += 1;
+        }
+        id_counter = 0;
+        for row in &mut q.query_input.0 {
+            row.id = id_counter;
+            id_counter += 1;
+        }
+    }
     Ok(data)
 }

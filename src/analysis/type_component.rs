@@ -1,4 +1,4 @@
-use crate::analysis::{ColumnType, RowData};
+use crate::analysis::{ColumnType, RowData, RowEntry};
 use crate::AppendAll;
 use relm4::factory::{
     DynamicIndex, FactoryComponent, FactoryComponentSender, FactoryVecDeque, FactoryVecDequeGuard,
@@ -13,6 +13,7 @@ use std::fmt::Debug;
 struct Row {
     name: String,
     ty: ColumnType,
+    id: usize,
     duplicate: bool,
     up: bool,
     down: bool,
@@ -28,10 +29,11 @@ enum RowMsg {
 }
 
 impl Row {
-    fn new(name: String, ty: ColumnType) -> Self {
+    fn new(name: String, ty: ColumnType, id: usize) -> Self {
         Row {
             name,
             ty,
+            id,
             duplicate: false,
             up: true,
             down: true,
@@ -48,7 +50,7 @@ enum RowValid {
 #[relm4::factory]
 impl FactoryComponent for Row {
     type CommandOutput = ();
-    type Init = (String, ColumnType);
+    type Init = (String, ColumnType, usize);
     type Input = RowValid;
     type Output = RowMsg;
     type ParentInput = TypeMsg;
@@ -123,11 +125,11 @@ impl FactoryComponent for Row {
     }
 
     fn init_model(
-        (name, ty): Self::Init,
+        (name, ty, id): Self::Init,
         _index: &DynamicIndex,
         _sender: FactoryComponentSender<Self>,
     ) -> Self {
-        Row::new(name, ty)
+        Row::new(name, ty, id)
     }
 
     fn update(&mut self, message: Self::Input, sender: FactoryComponentSender<Self>) {
@@ -163,6 +165,7 @@ pub(crate) enum Validity {
 
 pub(crate) struct Type {
     ty: FactoryVecDeque<Row>,
+    id_counter: usize,
     is_filled: bool,
     /// This field may only contain a useful value if [`Type::is_filled`] is true
     has_duplicates: bool,
@@ -174,7 +177,11 @@ impl Type {
         RowData(
             self.ty
                 .iter()
-                .map(|row| (row.name.trim().to_string(), row.ty))
+                .map(|row| RowEntry {
+                    name: row.name.trim().to_string(),
+                    ty: row.ty,
+                    id: row.id,
+                })
                 .collect(),
         )
     }
@@ -289,6 +296,7 @@ impl SimpleComponent for Type {
 
         let model = Type {
             ty,
+            id_counter: 0,
             is_filled: false,
             has_duplicates: false,
             required_rows: init,
@@ -300,13 +308,24 @@ impl SimpleComponent for Type {
     }
 
     fn update(&mut self, message: Self::Input, sender: ComponentSender<Self>) {
+        self.update(message, sender);
+    }
+}
+
+impl Type {
+    fn update(&mut self, message: TypeMsg, sender: ComponentSender<Self>) {
         let mut types = self.ty.guard();
         let send = |val: Validity| {
             sender.output(ValidityMsg::ValidityChanged(val));
         };
+        let mut next_id = || {
+            let id = self.id_counter;
+            self.id_counter += 1;
+            id
+        };
         match message {
             TypeMsg::Add => {
-                types.push_back((String::new(), ColumnType::String));
+                types.push_back((String::new(), ColumnType::String, next_id()));
                 types.restore_move_valid();
                 if self.is_filled {
                     send(Validity::NotFilled);
@@ -315,7 +334,7 @@ impl SimpleComponent for Type {
             }
             TypeMsg::AddAbove(idx) => {
                 let idx = idx.current_index();
-                types.insert(idx, (String::new(), ColumnType::String));
+                types.insert(idx, (String::new(), ColumnType::String, next_id()));
                 types.restore_move_valid();
                 if self.is_filled {
                     send(Validity::NotFilled);
@@ -386,8 +405,8 @@ impl SimpleComponent for Type {
             }
             TypeMsg::Replicate(row_data) => {
                 types.clear();
-                for (name, ty) in row_data.0 {
-                    types.push_back((name, ty));
+                for row in row_data.0 {
+                    types.push_back((row.name, row.ty, next_id()));
                 }
                 types.restore_move_valid();
 
