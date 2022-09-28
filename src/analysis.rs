@@ -1,5 +1,5 @@
 use crate::analysis::edit_query_dialog::QueryDialog;
-use crate::analysis::input_values::InputValue;
+use crate::analysis::input_values::{InputValue, InputValueMsg};
 use crate::combobox::AppendAll;
 use crate::Msg;
 use relm4::gtk;
@@ -14,7 +14,7 @@ use std::convert::identity;
 use std::error::Error;
 use std::fs::File;
 use std::rc::Rc;
-use tap::{Pipe, TapFallible};
+use tap::TapFallible;
 
 mod edit_query_dialog;
 mod input_values;
@@ -30,7 +30,6 @@ pub(crate) enum AnalysisMsg {
     ConnectDb(Rc<Connection>),
     QuerySelected(Option<usize>),
     NewQueryNameChanged(GString),
-    Test(usize),
 }
 
 #[tracker::track]
@@ -128,14 +127,6 @@ impl SimpleComponent for Analysis {
                         }
                     },
                 },
-                attach[0, 4, 2, 1] = &gtk::Button {
-                    set_label: "Test",
-                    connect_clicked[sender, selected_query] => move |_| {
-                        if let Some(id) = selected_query.active() {
-                            sender.input(AnalysisMsg::Test(id as usize));
-                        }
-                    }
-                }
             },
             gtk::ScrolledWindow {
                 #[name(list)]
@@ -145,7 +136,12 @@ impl SimpleComponent for Analysis {
                     set_valign: gtk::Align::Center,
                 },
             },
-            append: model.input_values.widget(),
+            gtk::ScrolledWindow {
+                set_child: Some(model.input_values.widget()),
+                set_hexpand: false,
+                set_vexpand: true,
+                set_policy: (gtk::PolicyType::Never, gtk::PolicyType::Automatic),
+            },
         }
     }
 
@@ -269,17 +265,20 @@ impl SimpleComponent for Analysis {
             AnalysisMsg::QuerySelected(active) => {
                 self.selected_query = active;
                 self.set_query_selected(active.is_some());
+
+                if let Some(active) = active {
+                    if let Some((name, q)) = self.queries.get(active) {
+                        self.input_values.emit(InputValueMsg::Replicate(
+                            name.clone(),
+                            q.query_input.clone(),
+                        ));
+                    }
+                }
             }
             AnalysisMsg::NewQueryNameChanged(name) => {
                 let name = name.trim();
                 self.new_button_valid =
                     !name.is_empty() && !self.queries.iter().map(|(n, _)| n).any(|n| n == name);
-            }
-            AnalysisMsg::Test(id) => {
-                let (name, input) = self.queries[id]
-                    .pipe_ref(|(name, query)| (name.clone(), query.query_input.clone()));
-                self.input_values
-                    .emit(input_values::InputValueMsg::Replicate(name, input));
             }
         }
     }
