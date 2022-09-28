@@ -15,18 +15,20 @@ struct Value {
 }
 
 trait SetDateFromString {
-    fn set_date_from_string(&self, date: &str);
+    fn set_date_from_string(&self, date: &ColumnTypeValue);
 }
 
 impl SetDateFromString for gtk::Calendar {
-    fn set_date_from_string(&self, date: &str) {
-        let mut chunks = date.split('-');
-        let year: i32 = chunks.next().unwrap().parse().unwrap();
-        let month: i32 = chunks.next().unwrap().parse().unwrap();
-        let day: i32 = chunks.next().unwrap().parse().unwrap();
-        self.set_year(year);
-        self.set_month(month);
-        self.set_day(day);
+    fn set_date_from_string(&self, date: &ColumnTypeValue) {
+        if let ColumnTypeValue::Date(date) = date {
+            let mut chunks = date.split('-');
+            let year: i32 = chunks.next().unwrap().parse().unwrap();
+            let month: i32 = chunks.next().unwrap().parse().unwrap();
+            let day: i32 = chunks.next().unwrap().parse().unwrap();
+            self.set_year(year);
+            self.set_month(month - 1);
+            self.set_day(day);
+        }
     }
 }
 
@@ -41,6 +43,18 @@ impl FactoryComponent for Value {
     type Widgets = Valuewidgets;
 
     view! {
+        #[name(date_selector)]
+        gtk::Popover {
+            gtk::Calendar {
+                #[track(self.changed(Value::value()))]
+                set_date_from_string: &self.value,
+                connect_day_selected[sender, date_button] => move |this| {
+                    let date = this.date().format("%F").unwrap();
+                    date_button.set_label(&date);
+                    sender.input(ColumnTypeValue::Date(date.to_string()));
+                },
+            }
+        },
         #[root]
         #[name(root_box)]
         gtk::Box {
@@ -54,6 +68,9 @@ impl FactoryComponent for Value {
                     gtk::Entry {
                         #[track(self.changed(Value::value()))]
                         set_text: s,
+                        set_size_request: (150, -1),
+                        set_margin_end: 2,
+                        set_margin_start: 2,
                         connect_changed[sender] => move |this| {
                             sender.input(ColumnTypeValue::String(this.text().trim().to_string()));
                         },
@@ -68,18 +85,23 @@ impl FactoryComponent for Value {
                         set_range: (0.0, f64::MAX),
                         #[track(self.changed(Value::value()))]
                         set_value: *n as f64,
+                        set_size_request: (150, -1),
+                        set_margin_end: 2,
+                        set_margin_start: 2,
                         connect_changed[sender] => move |this| {
                             sender.input(ColumnTypeValue::Number(this.value() as i64));
                         },
                     }
                 }
                 ColumnTypeValue::Date(d) => {
-                    gtk::Calendar {
+                    #[name(date_button)]
+                    gtk::MenuButton {
                         #[track(self.changed(Value::value()))]
-                        set_date_from_string: d,
-                        connect_day_selected[sender] => move |this| {
-                            sender.input(ColumnTypeValue::Date(this.date().format("%F").unwrap().to_string()));
-                        },
+                        set_label: d,
+                        set_popover: Some(&date_selector),
+                        set_size_request: (150, -1),
+                        set_margin_end: 2,
+                        set_margin_start: 2,
                     }
                 }
             }
@@ -113,7 +135,6 @@ pub(crate) struct InputValue {
 #[derive(Debug)]
 pub(crate) enum InputValueMsg {
     Replicate(String, RowData),
-    Show(String),
 }
 
 #[relm4::component(pub(crate))]
@@ -125,9 +146,9 @@ impl SimpleComponent for InputValue {
 
     view! {
         #[root]
-        #[name(root)]
+        #[name(values)]
         gtk::Box {
-            set_orientation: gtk::Orientation::Vertical,
+           set_orientation: gtk::Orientation::Vertical,
         }
     }
 
@@ -141,7 +162,7 @@ impl SimpleComponent for InputValue {
         let model = InputValue {
             data: HashMap::new(),
             show: String::new(),
-            values: FactoryVecDeque::new(widgets.root.clone(), &sender.input),
+            values: FactoryVecDeque::new(widgets.values.clone(), &sender.input),
         };
 
         ComponentParts { model, widgets }
@@ -219,7 +240,6 @@ impl InputValue {
                     }
                 }
             }
-            InputValueMsg::Show(name) => {}
         }
     }
 }
