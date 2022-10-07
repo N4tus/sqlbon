@@ -6,6 +6,7 @@ use relm4::factory::{
 use relm4::gtk::glib::GString;
 use relm4::gtk::{self, prelude::*};
 use relm4::{ComponentParts, ComponentSender, SimpleComponent};
+use std::cmp::max;
 use std::collections::HashSet;
 use std::fmt::Debug;
 
@@ -318,14 +319,10 @@ impl Type {
         let send = |val: Validity| {
             sender.output(ValidityMsg::ValidityChanged(val));
         };
-        let mut next_id = || {
-            let id = self.id_counter;
-            self.id_counter += 1;
-            id
-        };
         match message {
             TypeMsg::Add => {
-                types.push_back((String::new(), ColumnType::String, next_id()));
+                types.push_back((String::new(), ColumnType::String, self.id_counter));
+                self.id_counter += 1;
                 types.restore_move_valid();
                 if self.is_filled {
                     send(Validity::NotFilled);
@@ -334,7 +331,8 @@ impl Type {
             }
             TypeMsg::AddAbove(idx) => {
                 let idx = idx.current_index();
-                types.insert(idx, (String::new(), ColumnType::String, next_id()));
+                types.insert(idx, (String::new(), ColumnType::String, self.id_counter));
+                self.id_counter += 1;
                 types.restore_move_valid();
                 if self.is_filled {
                     send(Validity::NotFilled);
@@ -404,9 +402,11 @@ impl Type {
                 }
             }
             TypeMsg::Replicate(row_data) => {
+                self.id_counter = 0;
                 types.clear();
                 for row in row_data.0 {
-                    types.push_back((row.name, row.ty, next_id()));
+                    types.push_back((row.name, row.ty, row.id));
+                    self.id_counter = max(row.id + 1, self.id_counter);
                 }
                 types.restore_move_valid();
 
