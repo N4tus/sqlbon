@@ -242,4 +242,11 @@ impl InputValue {
             }
         }
     }
+
+    pub fn get_input_values(&self) -> Vec<(String, ColumnTypeValue)> {
+        self.values
+            .iter()
+            .map(|row| (row.name.clone(), row.value.clone()))
+            .collect()
+    }
 }

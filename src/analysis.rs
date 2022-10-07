@@ -8,10 +8,11 @@ use relm4::gtk::prelude::*;
 use relm4::{
     Component, ComponentController, ComponentParts, ComponentSender, Controller, SimpleComponent,
 };
-use rusqlite::Connection;
+use rusqlite::types::ToSqlOutput;
+use rusqlite::{Connection, ToSql};
 use serde::{Deserialize, Serialize};
 use std::convert::identity;
-use std::error::Error;
+use std::fmt::Formatter;
 use std::fs::File;
 use std::rc::Rc;
 use tap::TapFallible;
@@ -48,6 +49,8 @@ pub(crate) struct Analysis {
     query_dialog: Controller<edit_query_dialog::QueryDialog>,
     #[tracker::do_not_track]
     input_values: Controller<input_values::InputValue>,
+    #[tracker::no_eq]
+    query_error: String,
 }
 
 struct Data {
@@ -99,7 +102,7 @@ impl SimpleComponent for Analysis {
                 },
                 attach[0, 2, 1, 1] = &gtk::Button {
                     set_label: "edit",
-                    #[track(model.changed(Analysis::query_selected()))]
+                    #[track]
                     set_sensitive: model.query_selected,
                     connect_clicked[sender, selected_query] => move |_| {
                         if let Some(id) = selected_query.active() {
@@ -109,7 +112,7 @@ impl SimpleComponent for Analysis {
                 },
                 attach[1, 2, 1, 1] = &gtk::Button {
                     set_label: "delete",
-                    #[track(model.changed(Analysis::query_selected()))]
+                    #[track]
                     set_sensitive: model.query_selected,
                     connect_clicked[sender, selected_query] => move |_| {
                         if let Some(id) = selected_query.active() {
@@ -119,7 +122,7 @@ impl SimpleComponent for Analysis {
                 },
                 attach[0, 3, 2, 1] = &gtk::Button {
                     set_label: "execute",
-                    #[track(model.changed(Analysis::query_selected()))]
+                    #[track]
                     set_sensitive: model.query_selected,
                     connect_clicked[sender, selected_query] => move |_| {
                         if let Some(id) = selected_query.active() {
@@ -128,13 +131,22 @@ impl SimpleComponent for Analysis {
                     },
                 },
             },
-            gtk::ScrolledWindow {
-                #[name(list)]
-                gtk::TreeView {
-                    set_hexpand: true,
-                    set_vexpand: false,
-                    set_valign: gtk::Align::Center,
+            gtk::Box {
+                set_orientation: gtk::Orientation::Vertical,
+                set_vexpand: true,
+                gtk::ScrolledWindow {
+                    set_vexpand: true,
+                    #[name(list)]
+                    gtk::TreeView {
+                        set_hexpand: true,
+                        set_vexpand: true,
+                    },
                 },
+                gtk::Label {
+                    #[track]
+                    set_text: &model.query_error,
+                    set_vexpand: false,
+                }
             },
             gtk::ScrolledWindow {
                 set_child: Some(model.input_values.widget()),
@@ -199,6 +211,7 @@ impl SimpleComponent for Analysis {
             query_selected: false,
             query_dialog,
             input_values,
+            query_error: String::new(),
             tracker: 0,
         };
 
@@ -206,14 +219,27 @@ impl SimpleComponent for Analysis {
         ComponentParts { model, widgets }
     }
 
-    fn update(&mut self, message: Self::Input, _sender: ComponentSender<Self>) {
+    fn update(&mut self, message: Self::Input, sender: ComponentSender<Self>) {
+        self.update(message, sender);
+    }
+}
+
+impl Analysis {
+    fn update(&mut self, message: AnalysisMsg, _sender: ComponentSender<Self>) {
         self.reset();
         match message {
             AnalysisMsg::PopulateModel(id) => {
                 if let (Some(conn), Some((_, query))) = (&self.conn, self.queries.get(id)) {
-                    match Analysis::exec_query(conn, id, query) {
-                        Ok(data) => self.set_analysis(Some(data)),
-                        Err(err) => eprintln!("[exec query]{err:#?}"),
+                    let values = self.input_values.state().get().model.get_input_values();
+
+                    match Analysis::exec_query(conn, id, query, values) {
+                        Ok(data) => {
+                            self.set_analysis(Some(data));
+                            self.set_query_error(String::new());
+                        }
+                        Err(err_str) => {
+                            self.set_query_error(err_str);
+                        }
                     }
                 }
             }
@@ -291,11 +317,35 @@ pub(crate) enum ColumnType {
     Date,
 }
 
+impl std::fmt::Display for ColumnType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            ColumnType::String => f.write_str("String"),
+            ColumnType::Number => f.write_str("Number"),
+            ColumnType::Date => f.write_str("Date"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum ColumnTypeValue {
     String(String),
     Number(i64),
     Date(String),
+}
+
+impl ToSql for ColumnTypeValue {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        Ok(match self {
+            ColumnTypeValue::String(s) => {
+                ToSqlOutput::Borrowed(rusqlite::types::ValueRef::Text(s.as_bytes()))
+            }
+            ColumnTypeValue::Number(n) => ToSqlOutput::Owned(rusqlite::types::Value::Integer(*n)),
+            ColumnTypeValue::Date(d) => {
+                ToSqlOutput::Borrowed(rusqlite::types::ValueRef::Text(d.as_bytes()))
+            }
+        })
+    }
 }
 
 impl ColumnTypeValue {
@@ -304,16 +354,6 @@ impl ColumnTypeValue {
             ColumnTypeValue::String(_) => ty == ColumnType::String,
             ColumnTypeValue::Number(_) => ty == ColumnType::Number,
             ColumnTypeValue::Date(_) => ty == ColumnType::Date,
-        }
-    }
-}
-
-impl ToString for ColumnType {
-    fn to_string(&self) -> String {
-        match self {
-            ColumnType::String => "String".to_string(),
-            ColumnType::Number => "Number".to_string(),
-            ColumnType::Date => "Date".to_string(),
         }
     }
 }
@@ -422,57 +462,133 @@ impl Query {
     }
 }
 
+impl From<ExecQueryErrConv> for String {
+    fn from(err: ExecQueryErrConv) -> Self {
+        let conversion_failure = |column_idx: usize,
+                                  expected_type: rusqlite::types::Type,
+                                  sql_column_name: String| {
+            let column_name = err.failed_name;
+            let given_type = err.given_type;
+            let expected_type = if expected_type == rusqlite::types::Type::Integer {
+                "Number"
+            } else {
+                "String/Text"
+            };
+            format!("Mismatch between the output type '{column_name}' (at {column_idx}) and the query column type for '{sql_column_name}': column type: `{given_type}` <-> query type `{expected_type}`")
+        };
+        match err.err {
+            rusqlite::Error::FromSqlConversionFailure(column_idx, expected_type, _) => {
+                conversion_failure(column_idx, expected_type, "<unknown>".to_string())
+            }
+            rusqlite::Error::InvalidColumnType(column_idx, sql_column_name, expected_type) => {
+                conversion_failure(column_idx, expected_type, sql_column_name)
+            }
+            rusqlite::Error::InvalidParameterName(param) => {
+                format!("The query did not expected to receive a parameter '{param}'.")
+            }
+            rusqlite::Error::InvalidColumnIndex(_) => {
+                "The query has less columns than the amount of given output types.".to_string()
+            }
+            rusqlite::Error::InvalidQuery => "The Query is invalid.".to_string(),
+            rusqlite::Error::MultipleStatement => {
+                "The query contains multiple statements. Only one is allowed".to_string()
+            }
+            err => {
+                eprintln!("[execute query]{err:#?}");
+                "Unknown error".to_string()
+            }
+        }
+    }
+}
+
+struct ExecQueryErrConv {
+    err: rusqlite::Error,
+    given_type: ColumnType,
+    failed_name: String,
+}
+
+impl ExecQueryErrConv {
+    fn new(
+        given_type: ColumnType,
+        failed_name: &str,
+    ) -> impl FnOnce(rusqlite::Error) -> ExecQueryErrConv + '_ {
+        move |err| ExecQueryErrConv {
+            err,
+            given_type,
+            failed_name: failed_name.to_string(),
+        }
+    }
+    fn empty() -> impl FnOnce(rusqlite::Error) -> ExecQueryErrConv {
+        |err| ExecQueryErrConv {
+            err,
+            given_type: ColumnType::String,
+            failed_name: String::new(),
+        }
+    }
+}
+
 impl Analysis {
     fn exec_query(
         conn: &Connection,
         query_id: usize,
         query: &Query,
-    ) -> Result<Data, Box<dyn Error>> {
-        let sql_query = conn.prepare(&query.sql);
-        match sql_query {
-            Ok(mut stmt) => {
-                let ctypes: Vec<Type> = query
-                    .table_header
-                    .0
-                    .iter()
-                    .map(|row_entry| row_entry.ty.into())
-                    .collect();
+        mut input_data: Vec<(String, ColumnTypeValue)>,
+    ) -> Result<Data, String> {
+        let mut stmt = conn
+            .prepare(&query.sql)
+            .map_err(ExecQueryErrConv::empty())?;
+        let ctypes: Vec<Type> = query
+            .table_header
+            .0
+            .iter()
+            .map(|row_entry| row_entry.ty.into())
+            .collect();
 
-                let store = gtk::ListStore::new(ctypes.as_slice());
-                let mut rows = stmt.query([]).unwrap();
-                while let Some(row) = rows.next()? {
-                    let mut values = Vec::with_capacity(query.table_header.0.len());
-                    for (i, row_entry) in query.table_header.0.iter().enumerate() {
-                        match row_entry.ty {
-                            ColumnType::String => {
-                                let v: String = row.get(i)?;
-                                values.push(ColumnTypeValue::String(v));
-                            }
-                            ColumnType::Number => {
-                                let v: i64 = row.get(i)?;
-                                values.push(ColumnTypeValue::Number(v));
-                            }
-                            ColumnType::Date => {
-                                let v: String = row.get(i)?;
-                                values.push(ColumnTypeValue::Date(v));
-                            }
-                        }
-                    }
-                    let mut value_refs = Vec::with_capacity(query.table_header.0.len());
-                    for (i, value) in values.iter().enumerate() {
-                        value_refs.push((i as u32, value as &dyn ToValue));
-                    }
+        let store = gtk::ListStore::new(ctypes.as_slice());
 
-                    let iter = store.append();
-                    store.set(&iter, value_refs.as_slice());
-                }
-                Ok(Data { store, query_id })
-            }
-            Err(err) => {
-                eprintln!("[populate model]{err:#?}");
-                Err(Box::new(err))
-            }
+        for (n, _) in &mut input_data {
+            n.insert(0, ':');
         }
+        let input_data: Vec<_> = input_data
+            .iter()
+            .map(|(n, v)| (n.as_str(), v as &dyn ToSql))
+            .collect();
+        let mut rows = stmt
+            .query(input_data.as_slice())
+            .map_err(ExecQueryErrConv::empty())?;
+        while let Some(row) = rows.next().map_err(ExecQueryErrConv::empty())? {
+            let mut values = Vec::with_capacity(query.table_header.0.len());
+            for (i, row_entry) in query.table_header.0.iter().enumerate() {
+                match row_entry.ty {
+                    ColumnType::String => {
+                        let v: String = row
+                            .get(i)
+                            .map_err(ExecQueryErrConv::new(ColumnType::String, &row_entry.name))?;
+                        values.push(ColumnTypeValue::String(v));
+                    }
+                    ColumnType::Number => {
+                        let v: i64 = row
+                            .get(i)
+                            .map_err(ExecQueryErrConv::new(ColumnType::Number, &row_entry.name))?;
+                        values.push(ColumnTypeValue::Number(v));
+                    }
+                    ColumnType::Date => {
+                        let v: String = row
+                            .get(i)
+                            .map_err(ExecQueryErrConv::new(ColumnType::Date, &row_entry.name))?;
+                        values.push(ColumnTypeValue::Date(v));
+                    }
+                }
+            }
+            let mut value_refs = Vec::with_capacity(query.table_header.0.len());
+            for (i, value) in values.iter().enumerate() {
+                value_refs.push((i as u32, value as &dyn ToValue));
+            }
+
+            let iter = store.append();
+            store.set(&iter, value_refs.as_slice());
+        }
+        Ok(Data { store, query_id })
     }
 }
 
