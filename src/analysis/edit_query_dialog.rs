@@ -6,7 +6,7 @@ use relm4::gtk::glib::GString;
 use relm4::gtk::prelude::*;
 use relm4::{
     gtk, Component, ComponentController, ComponentParts, ComponentSender, Controller,
-    SimpleComponent, WidgetPlus,
+    RelmWidgetExt, SimpleComponent,
 };
 
 #[tracker::track]
