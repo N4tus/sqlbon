@@ -162,7 +162,7 @@ impl SimpleComponent for InputValue {
         let model = InputValue {
             data: HashMap::new(),
             show: String::new(),
-            values: FactoryVecDeque::new(widgets.values.clone(), &sender.input),
+            values: FactoryVecDeque::new(widgets.values.clone(), sender.input_sender()),
         };
 
         ComponentParts { model, widgets }

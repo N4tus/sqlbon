@@ -293,7 +293,7 @@ impl SimpleComponent for Type {
     ) -> ComponentParts<Self> {
         let row_box = gtk::Box::default();
 
-        let ty = FactoryVecDeque::new(row_box.clone(), &sender.input);
+        let ty = FactoryVecDeque::new(row_box.clone(), sender.input_sender());
 
         let model = Type {
             ty,

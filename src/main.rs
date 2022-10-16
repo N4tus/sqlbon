@@ -9,7 +9,7 @@ use relm4::gtk::prelude::*;
 use relm4::gtk::{self, STYLE_PROVIDER_PRIORITY_APPLICATION};
 use relm4::{
     Component, ComponentController, ComponentParts, ComponentSender, Controller, RelmApp,
-    SimpleComponent, WidgetPlus,
+    RelmWidgetExt, SimpleComponent,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
